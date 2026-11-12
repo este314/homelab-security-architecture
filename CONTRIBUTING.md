@@ -14,7 +14,7 @@ ejemplo anonimizadas**. Las contribuciones más útiles son las que explican
 
   ```bash
   npx -y @mermaid-js/mermaid-cli -i docs/diagramas/D1-arquitectura.mmd \
-      -o docs/diagramas/D1-arquitectura.png -b transparent -w 2400
+      -o docs/diagramas/D1-arquitectura.png -b white -w 2400 -s 2
   ```
 
 - **Configuración**: sin secretos en claro, siempre `${VARIABLE}`. Sin IPs

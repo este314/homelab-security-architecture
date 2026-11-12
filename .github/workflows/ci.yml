@@ -156,8 +156,12 @@ jobs:
   # =================================================================
   # 3. Diagramas
   # =================================================================
-  # Valida que todos los .mmd compilan y regenera los exports para
-  # detectar que están desactualizados.
+  # Valida que todos los .mmd compilan y que existe el export
+  # versionado de cada uno.
+  #
+  # NO se comparan los PNG byte a byte: el render depende de la
+  # versión de mermaid y del motor de render, así que una comparación
+  # exacta fallaría sin que el diagrama esté mal.
   diagrams:
     name: Diagramas
     runs-on: ubuntu-latest
@@ -167,20 +171,38 @@ jobs:
       - name: Instalar mermaid-cli
         run: npm install --silent --no-fund --no-audit @mermaid-js/mermaid-cli@11
 
-      - name: Validar y regenerar
+      - name: Validar el render de cada diagrama
         run: |
-          set -e
+          set -euo pipefail
           mkdir -p /tmp/render
+
+          # Chrome necesita --no-sandbox en el entorno del runner.
+          cat > /tmp/puppeteer.json <<'JSON'
+          { "args": ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"] }
+          JSON
+
           for src in docs/diagramas/*.mmd; do
             base=$(basename "$src" .mmd)
             echo "· $base"
-            npx mmdc -i "$src" -o "/tmp/render/$base.png" -b white -w 2400 -s 2
 
-            # El PNG versionado debe coincidir con el recién generado.
-            if ! cmp -s "/tmp/render/$base.png" "docs/diagramas/$base.png"; then
-              echo "::error::El export $base.png está desactualizado."
-              echo "Regenera con: npx mmdc -i docs/diagramas/$base.mmd -o docs/diagramas/$base.png -b white -w 2400 -s 2"
+            # 1. El diagrama tiene que renderizar sin error
+            npx mmdc -i "$src" -o "/tmp/render/$base.png" \
+              -b white -w 2400 -s 2 -p /tmp/puppeteer.json
+
+            # 2. El render no puede estar vacío
+            if [ ! -s "/tmp/render/$base.png" ]; then
+              echo "::error::El render de $base ha salido vacío."
               exit 1
             fi
+
+            # 3. El export versionado tiene que existir
+            for ext in png svg; do
+              if [ ! -s "docs/diagramas/$base.$ext" ]; then
+                echo "::error::Falta el export docs/diagramas/$base.$ext"
+                echo "Regenera con:"
+                echo "  npx mmdc -i docs/diagramas/$base.mmd -o docs/diagramas/$base.png -b white -w 2400 -s 2"
+                exit 1
+              fi
+            done
           done
-          echo "Diagramas: válidos y exports al día."
+          echo "Diagramas: todos renderizan y tienen export."
