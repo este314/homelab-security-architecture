@@ -335,7 +335,7 @@ refresco del bouncer es el cuello de botella dominante).
 
 ---
 
-## El hallazgo que motivation el filtrado en el origen
+## El hallazgo que motivó el filtrado en el origen
 
 De las 9,1 millones de filas almacenadas, **el 79,5 % no aporta señal**:
 
@@ -348,6 +348,38 @@ Se manifiesta como picos de volumen anómalo: **1,79 M de filas en un único
 día** (30-oct) y **1,74 M** (16-oct), frente a una media de 5.000–50.000.
 Ambos picos son **100 % ruido**.
 
+```mermaid
+flowchart TB
+    subgraph ING["Ingesta (Vector aggregator)"]
+        S1["security.security_logs<br/>eventos del perímetro"]
+        S2["security.crowdsec_logs<br/>decisiones de bloqueo"]
+        S3["security.falco_events<br/>runtime eBPF"]
+    end
+
+    DICT[("security.geoip_dict<br/>3,7 M de rangos")]
+
+    subgraph SEM["Capa semántica (vistas SQL)"]
+        V1["v_eventos_por_minuto"]
+        V2["v_top_ips_atacantes"]
+        V3["v_bans_por_escenario"]
+        V4["v_reglas_waf"]
+        V5["v_ips_baneadas"]
+        V6["v_salud_ingesta"]
+    end
+
+    subgraph CONS["Consumo"]
+        G["Grafana<br/>panel SOC"]
+        AG["Agentes de investigación"]
+    end
+
+    S1 --> V1 & V2 & V4 & V6
+    S2 --> V3 & V5
+    S3 -.-> V6
+    DICT -.->|"enriquece"| V2 & V3 & V5
+    V1 & V2 & V3 & V4 & V5 & V6 --> G
+    V1 & V2 & V3 --> AG
+```
+
 **La decisión:** filtrar en el borde (Vector, antes de publicar en Kafka) y no
 en el destino. Se recortan ~7,2 M de filas —un **79,5 % del histórico**— sin
 perder ninguna detección real, porque esas tres reglas describen anomalías de
@@ -357,7 +389,7 @@ añade campos de severidad explícitos y un nivel de alerta que **no depende del
 código de respuesta HTTP**.
 
 > Detalle completo, con el antes y el después, en
-> [`docs/arquitectura.md`](docs/arquitectura.md#optimización-el-795-de-ruido).
+> [`docs/arquitectura.md`](docs/arquitectura.md#4-optimización-el-795-de-ruido).
 
 ---
 
@@ -410,6 +442,18 @@ Cada decisión con alternativas descartadas y su coste:
 | [`docs/threat-model.md`](docs/threat-model.md) | Modelo de amenazas: activos, actores, superficie, mitigaciones |
 | [`docs/runbook.md`](docs/runbook.md) | Procedimientos de operación y mantenimiento |
 | [`docs/diagramas/`](docs/diagramas/) | Fuentes Mermaid editables + exports PNG/SVG |
+
+### Diagramas
+
+| # | Diagrama | Fuente | PNG | SVG |
+|---|---|---|---|---|
+| D1 | Arquitectura general | [`.mmd`](docs/diagramas/D1-arquitectura.mmd) | [PNG](docs/diagramas/D1-arquitectura.png) | [SVG](docs/diagramas/D1-arquitectura.svg) |
+| D2 | Flujo de un ataque hasta el ban | [`.mmd`](docs/diagramas/D2-flujo-ataque-a-ban.mmd) | [PNG](docs/diagramas/D2-flujo-ataque-a-ban.png) | [SVG](docs/diagramas/D2-flujo-ataque-a-ban.svg) |
+| D3 | Modelo de datos en ClickHouse | [`.mmd`](docs/diagramas/D3-modelo-datos.mmd) | [PNG](docs/diagramas/D3-modelo-datos.png) | [SVG](docs/diagramas/D3-modelo-datos.svg) |
+| D4 | Flujo de datos operativos | [`.mmd`](docs/diagramas/D4-flujo-datos-operativos.mmd) | [PNG](docs/diagramas/D4-flujo-datos-operativos.png) | [SVG](docs/diagramas/D4-flujo-datos-operativos.svg) |
+
+Los `.mmd` son la fuente de verdad: se editan en GitHub y se regeneran los
+exportados con `npx @mermaid-js/mermaid-cli`.
 
 ---
 

@@ -28,7 +28,7 @@ de infraestructura son genéricos (`example.com`, `192.168.10.0/24`,
 El pipeline de CI ejecuta dos comprobaciones en cada push:
 
 | Job | Qué verifica |
-|-----|--------------|
+| --- | --- |
 | `secrets` | `gitleaks` (detección de secretos por patrón y entropía) + una lista de denegación propia de PII e identificadores de infraestructura |
 | `docs` | `markdownlint` y comprobación de enlaces internos rotos |
 
