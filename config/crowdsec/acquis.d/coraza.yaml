@@ -1,0 +1,8 @@
+# Adquisición de los eventos del WAF.
+#
+# Tipo declarado: coraza
+source: file
+filenames:
+  - /var/log/crowdsec-pipeline/coraza.log
+labels:
+  type: coraza

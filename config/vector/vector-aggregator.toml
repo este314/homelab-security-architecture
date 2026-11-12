@@ -1,0 +1,297 @@
+# =====================================================================
+# Vector · AGREGADOR CENTRAL
+# ---------------------------------------------------------------------
+# Consume el bus de eventos y escribe en el almacén analítico.
+# Es el ÚNICO escritor: toda la lógica de normalización está en el
+# borde (vector-edge.toml), aquí sólo se normaliza lo que llega desde
+# fuentes antiguas o alternativas.
+#
+# Validar antes de aplicar:
+#   vector validate --config /etc/vector/vector.toml
+# =====================================================================
+
+data_dir = "/var/lib/vector"
+
+# ==========================================
+# 1. FUENTES
+# ==========================================
+
+[sources.kafka_ingress]
+type = "kafka"
+bootstrap_servers = "${KAFKA_BROKER}:${KAFKA_PORT}"
+topics = ["^security-logs-.*"]
+group_id = "vector-clickhouse-consumer-v1"
+
+[sources.kafka_ingress.librdkafka_options]
+"session.timeout.ms" = "60000"
+"max.poll.interval.ms" = "300000"
+"heartbeat.interval.ms" = "5000"
+
+[sources.kafka_crowdsec_ingress]
+type = "kafka"
+bootstrap_servers = "${KAFKA_BROKER}:${KAFKA_PORT}"
+topics = ["crowdsec-alerts-logs"]
+group_id = "vector-clickhouse-crowdsec-v1"
+auto_offset_reset = "beginning"
+
+[sources.kafka_crowdsec_ingress.librdkafka_options]
+"session.timeout.ms" = "60000"
+"max.poll.interval.ms" = "300000"
+"heartbeat.interval.ms" = "5000"
+
+# ==========================================
+# 2. TRANSFORMACIÓN
+# ==========================================
+
+[transforms.parse_logs]
+type = "remap"
+inputs = ["kafka_ingress"]
+source = '''
+# 1. Los eventos del borde ya llegan normalizados en JSON.
+parsed_json, err_json = parse_json(.message)
+
+if err_json == null {
+    .host = string(parsed_json.host) ?? "unknown"
+    .service = string(parsed_json.service) ?? "generic"
+    .level = string(parsed_json.level) ?? "info"
+    .rule_id = string(parsed_json.rule_id) ?? ""
+    .rule_msg = string(parsed_json.rule_msg) ?? ""
+    .rule_severity = to_int(parsed_json.rule_severity) ?? 0
+    .rule_tags = parsed_json.rule_tags ?? []
+    .auth_user = string(parsed_json.auth_user) ?? ""
+    .event_type = string(parsed_json.event_type) ?? ""
+
+    inner_msg = string(parsed_json.message) ?? ""
+
+    # --- Caso A: el mensaje original es un log de acceso del proxy ---
+    if .service == "haproxy" || contains(inner_msg, "haproxy[") {
+        clean_msg = inner_msg
+
+        # Se recorta la cabecera syslog si existe
+        if contains(clean_msg, "haproxy[") {
+            parts = split(clean_msg, "]: ")
+            if length(parts) > 1 {
+                clean_msg = parts[1]
+            }
+        }
+
+        parsed_kv, err_kv = parse_key_value(clean_msg)
+
+        if err_kv == null {
+            status_val, err_s = to_int(parsed_kv.status)
+            s_code = if err_s == null { status_val } else { 200 }
+
+            .message = clean_msg
+            .src_ip = string(parsed_kv.client_ip) ?? ""
+            .http_method = string(parsed_kv.method) ?? ""
+            .uri = string(parsed_kv.uri) ?? ""
+            .http_status = s_code
+        } else {
+            .message = inner_msg
+            .src_ip = ""
+            .http_method = ""
+            .uri = ""
+            .http_status = 0
+        }
+
+        .raw_json = encode_json(parsed_json)
+
+    # --- Caso B: evento ya estructurado (IDS, WAF, aplicación) ---
+    } else {
+        .message = inner_msg
+        .src_ip = string(parsed_json.src_ip) ?? ""
+        .http_method = string(parsed_json.http_method) ?? ""
+        .uri = string(parsed_json.uri) ?? ""
+
+        status_val, err_status = to_int(parsed_json.http_status)
+        .http_status = if err_status == null { status_val } else { 0 }
+
+        .raw_json = encode_json(parsed_json)
+    }
+
+} else {
+    # 2. Fallback: el evento llega como texto plano (por ejemplo, un
+    #    topic escrito por un productor que no usa el esquema común).
+    clean_msg = to_string!(.message)
+
+    if contains(clean_msg, "haproxy[") {
+        parts = split(clean_msg, "]: ")
+        if length(parts) > 1 {
+            clean_msg = parts[1]
+        }
+    }
+
+    parsed_kv, err_kv = parse_key_value(clean_msg)
+
+    if err_kv == null && exists(parsed_kv.client_ip) {
+        .host = get_hostname!()
+        .service = "haproxy"
+
+        status_val, err_s = to_int(parsed_kv.status)
+        s_code = if err_s == null { status_val } else { 200 }
+
+        .level = if s_code >= 400 { "warning" } else { "info" }
+        .message = clean_msg
+        .src_ip = string(parsed_kv.client_ip) ?? ""
+        .http_method = string(parsed_kv.method) ?? "GET"
+        .uri = string(parsed_kv.uri) ?? "/"
+        .http_status = s_code
+        .rule_id = ""
+        .rule_msg = ""
+        .rule_severity = 0
+        .rule_tags = []
+        .auth_user = ""
+        .event_type = "access"
+
+        clean = { "host": .host, "service": "haproxy", "level": .level, "message": clean_msg }
+        .raw_json = encode_json(clean)
+    } else {
+        .host = "unknown"
+        .service = "generic"
+        .level = "info"
+        .message = clean_msg
+        .src_ip = ""
+        .http_method = ""
+        .uri = ""
+        .http_status = 0
+        .rule_id = ""
+        .rule_msg = ""
+        .rule_severity = 0
+        .rule_tags = []
+        .auth_user = ""
+        .event_type = "generic"
+        .raw_json = clean_msg
+    }
+}
+
+# El timestamp se genera siempre al final, ya en el formato que espera
+# el almacén (DateTime64 con milisegundos).
+.timestamp = format_timestamp!(now(), "%Y-%m-%d %H:%M:%S%.3f")
+'''
+
+[transforms.parse_crowdsec]
+type = "remap"
+inputs = ["kafka_crowdsec_ingress"]
+source = '''
+# Normalización del registro de decisiones de CrowdSec.
+#
+# El mensaje original es texto libre. De él se extraen el escenario, la
+# IP, el país, el ASN y la duración del ban mediante expresiones
+# regulares, porque el formato no es un JSON estructurado.
+
+parsed, err = parse_json(.message)
+
+if err != null {
+  .raw_message = string!(.message)
+  .scenario = "unknown"
+  .source_ip = "0.0.0.0"
+  .source_country = "XX"
+  .source_as_number = 0
+  .source_as_name = ""
+  .action = "none"
+  .duration_seconds = 0
+  .origin = "vector"
+  .log_type = "raw"
+} else {
+  .raw_message = string(parsed.message) ?? string(parsed.msg) ?? string!(.message)
+  .scenario = string(parsed.scenario) ?? "unknown"
+  .action = string(parsed.action) ?? "none"
+  .origin = string(parsed.origin) ?? string(parsed.service) ?? "crowdsec"
+  .log_type = string(parsed.log_type) ?? string(parsed.level) ?? "info"
+
+  # --- IP: campo directo o extracción por expresión regular ---
+  extracted_ip = string(parsed.source_ip) ?? null
+  if extracted_ip == null {
+    ip_match = parse_regex(string(parsed.msg) ?? "", r'ip (?P<ip>\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})') ?? {}
+    extracted_ip = string(ip_match.ip) ?? "0.0.0.0"
+  }
+  .source_ip = extracted_ip
+
+  # --- País y ASN: campo directo o extracción del formato "(CC/ASNNN)" ---
+  geo_match = parse_regex(string(parsed.msg) ?? "", r'\((?P<country>[A-Z]{2})/(?P<asn>\d+)\)') ?? {}
+  .source_country = string(parsed.source_country) ?? string(geo_match.country) ?? "XX"
+  .source_as_number = abs(to_int(parsed.source_as_number) ?? to_int(geo_match.asn) ?? 0)
+  .source_as_name = string(parsed.source_as_name) ?? ""
+
+  # --- Duración del ban: "4h", "1d", "30m", "10s" ---
+  duration_raw = string(parsed.duration) ?? null
+  if duration_raw == null {
+    dur_match = parse_regex(string(parsed.msg) ?? "", r': (?P<duration>\d+[smhd]) ban') ?? {}
+    duration_raw = string(dur_match.duration) ?? "0"
+  }
+
+  dur_str = string(duration_raw) ?? "0"
+
+  if ends_with(dur_str, "h") {
+    val = to_int(replace(dur_str, "h", "")) ?? 0
+    .duration_seconds = abs(val * 3600)
+  } else if ends_with(dur_str, "m") {
+    val = to_int(replace(dur_str, "m", "")) ?? 0
+    .duration_seconds = abs(val * 60)
+  } else if ends_with(dur_str, "d") {
+    val = to_int(replace(dur_str, "d", "")) ?? 0
+    .duration_seconds = abs(val * 86400)
+  } else if ends_with(dur_str, "s") {
+    val = to_int(replace(dur_str, "s", "")) ?? 0
+    .duration_seconds = abs(val)
+  } else {
+    .duration_seconds = abs(to_int(dur_str) ?? 0)
+  }
+}
+
+# --- Timestamp compatible con DateTime ---
+ts_parsed = now()
+
+if .timestamp != null {
+  if is_string(.timestamp) {
+    ts_parsed = parse_timestamp(.timestamp, "%+") ?? now()
+  } else if is_timestamp(.timestamp) {
+    ts_parsed = .timestamp
+  }
+}
+
+.timestamp = format_timestamp!(ts_parsed, "%Y-%m-%d %H:%M:%S")
+'''
+
+# ==========================================
+# 3. SALIDA AL ALMACÉN ANALÍTICO
+# ==========================================
+#
+# La credencial de ingesta tiene INSERT y nada más: quien escribe no
+# puede leer lo que otros escribieron.
+
+[sinks.clickhouse_sink]
+type = "clickhouse"
+inputs = ["parse_logs"]
+endpoint = "http://${CLICKHOUSE_HOST}:${CLICKHOUSE_HTTP_PORT}"
+database = "${CLICKHOUSE_DB}"
+table = "security_logs"
+
+format = "json_each_row"
+skip_unknown_fields = true
+
+[sinks.clickhouse_sink.auth]
+strategy = "basic"
+user = "${CLICKHOUSE_USER}"
+password = "${CLICKHOUSE_PASSWORD}"
+
+[sinks.clickhouse_sink.batch]
+max_events = 5000
+timeout_secs = 5
+
+[sinks.clickhouse_crowdsec_sink]
+type = "clickhouse"
+inputs = ["parse_crowdsec"]
+endpoint = "http://${CLICKHOUSE_HOST}:${CLICKHOUSE_HTTP_PORT}"
+database = "${CLICKHOUSE_DB}"
+table = "crowdsec_logs"
+skip_unknown_fields = true
+
+[sinks.clickhouse_crowdsec_sink.auth]
+strategy = "basic"
+user = "${CLICKHOUSE_USER}"
+password = "${CLICKHOUSE_PASSWORD}"
+
+[sinks.clickhouse_crowdsec_sink.batch]
+max_events = 5000
+timeout_secs = 5

@@ -1,0 +1,31 @@
+%% D3 · Modelo de datos de seguridad en ClickHouse
+%% Tres tablas de ingestión + un diccionario + la capa semántica de vistas.
+flowchart TB
+    subgraph ING["Ingesta (Vector aggregator)"]
+        S1["security.security_logs<br/>eventos del perímetro"]
+        S2["security.crowdsec_logs<br/>decisiones de bloqueo"]
+        S3["security.falco_events<br/>runtime eBPF"]
+    end
+
+    DICT[("security.geoip_dict<br/>3,7 M de rangos")]
+
+    subgraph SEM["Capa semántica (vistas SQL)"]
+        V1["v_eventos_por_minuto"]
+        V2["v_top_ips_atacantes"]
+        V3["v_bans_por_escenario"]
+        V4["v_reglas_waf"]
+        V5["v_ips_baneadas"]
+        V6["v_salud_ingesta"]
+    end
+
+    subgraph CONS["Consumo"]
+        G["Grafana<br/>panel SOC"]
+        AG["Agentes de investigación"]
+    end
+
+    S1 --> V1 & V2 & V4 & V6
+    S2 --> V3 & V5
+    S3 -.-> V6
+    DICT -.->|"enriquece"| V2 & V3 & V5
+    V1 & V2 & V3 & V4 & V5 & V6 --> G
+    V1 & V2 & V3 --> AG

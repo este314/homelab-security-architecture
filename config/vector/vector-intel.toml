@@ -1,0 +1,228 @@
+# =====================================================================
+# Vector · agente de INTELIGENCIA
+# ---------------------------------------------------------------------
+# Traduce el bus de eventos al formato que CrowdSec sabe consumir.
+#
+# CrowdSec NO lee de Kafka: consume ficheros de log en línea. Este
+# agente escribe en /var/log/crowdsec-pipeline/<servicio>.log y
+# CrowdSec lo adquiere desde ahí (ver ../crowdsec/acquis.d/).
+#
+# Validar antes de aplicar:
+#   vector validate --config /etc/vector/vector.toml
+# =====================================================================
+
+data_dir = "/var/lib/vector"
+
+# ==========================================
+# 1. FUENTES
+# ==========================================
+#
+# Un topic por servicio. Se consumen por patrón para no tener que
+# enumerar topics: añadir un servicio no obliga a tocar la config.
+
+[sources.kafka_haproxy]
+type = "kafka"
+bootstrap_servers = "${KAFKA_BROKER}:${KAFKA_PORT}"
+topics = ["security-logs-haproxy"]
+group_id = "crowdsec-haproxy-group-v1"
+auto_offset_reset = "earliest"
+
+[sources.kafka_haproxy.librdkafka_options]
+"session.timeout.ms" = "60000"
+"max.poll.interval.ms" = "300000"
+"heartbeat.interval.ms" = "5000"
+
+[sources.kafka_suricata]
+type = "kafka"
+bootstrap_servers = "${KAFKA_BROKER}:${KAFKA_PORT}"
+topics = ["security-logs-suricata"]
+group_id = "crowdsec-suricata-group-v1"
+auto_offset_reset = "earliest"
+
+[sources.kafka_suricata.librdkafka_options]
+"session.timeout.ms" = "60000"
+"max.poll.interval.ms" = "300000"
+"heartbeat.interval.ms" = "5000"
+
+[sources.kafka_coraza]
+type = "kafka"
+bootstrap_servers = "${KAFKA_BROKER}:${KAFKA_PORT}"
+topics = ["security-logs-coraza"]
+group_id = "crowdsec-coraza-group-v1"
+auto_offset_reset = "earliest"
+
+[sources.kafka_coraza.librdkafka_options]
+"session.timeout.ms" = "60000"
+"max.poll.interval.ms" = "300000"
+"heartbeat.interval.ms" = "5000"
+
+[sources.kafka_apache]
+type = "kafka"
+bootstrap_servers = "${KAFKA_BROKER}:${KAFKA_PORT}"
+topics = ["security-logs-apache"]
+group_id = "crowdsec-apache-group-v1"
+auto_offset_reset = "earliest"
+
+[sources.kafka_apache.librdkafka_options]
+"session.timeout.ms" = "60000"
+"max.poll.interval.ms" = "300000"
+"heartbeat.interval.ms" = "5000"
+
+# Log nativo de CrowdSec (decisiones que el LAPI registra por su cuenta)
+[sources.crowdsec_logs]
+type = "file"
+include = ["/var/log/crowdsec.log"]
+read_from = "beginning"
+
+# ==========================================
+# 2. TRANSFORMACIONES
+# ==========================================
+
+# Log nativo de CrowdSec: formato logfmt (clave=valor)
+[transforms.parse_crowdsec]
+type = "remap"
+inputs = ["crowdsec_logs"]
+source = '''
+parsed, err = parse_logfmt(.message)
+
+if err == null {
+  .timestamp = parse_timestamp(parsed.time, "%Y-%m-%d-%T")
+            ?? parse_timestamp(parsed.time, "%Y-%m-%dT%H:%M:%S%z")
+            ?? now()
+  .level = string(parsed.level) ?? "info"
+  .msg = string(parsed.msg) ?? ""
+
+  # Escenario e IP de origen
+  scen, err = parse_regex(parsed.msg, r'(?P<scenario>[\w/-]+) by ip (?P<source_ip>[\d\.]+)')
+  if err == null {
+    .scenario = scen.scenario
+    .source_ip = scen.source_ip
+  }
+
+  # Acción y duración del ban
+  ban, err = parse_regex(parsed.msg, r': (?P<duration>[\w]+) (?P<action>ban|captcha) on')
+  if err == null {
+    .action = ban.action
+    .duration = ban.duration
+  }
+}
+
+.service = "crowdsec"
+'''
+
+# Los eventos del bus ya vienen normalizados: aquí sólo se extrae el
+# mensaje original, que es lo que los parsers de CrowdSec esperan.
+[transforms.parse_haproxy]
+type = "remap"
+inputs = ["kafka_haproxy"]
+source = '''
+parsed, err = parse_json(.message)
+if err == null {
+    if exists(parsed.message) {
+        .message = string!(parsed.message)
+    } else if exists(parsed.raw_json) {
+        .message = string!(parsed.raw_json)
+    } else if exists(parsed.log) {
+        .message = string!(parsed.log)
+    } else {
+        .message = encode_json(parsed)
+    }
+}
+'''
+
+[transforms.parse_suricata]
+type = "remap"
+inputs = ["kafka_suricata"]
+source = '''
+parsed, err = parse_json(.message)
+if err == null {
+    if exists(parsed.message) {
+        .message = string!(parsed.message)
+    } else if exists(parsed.raw_json) {
+        .message = string!(parsed.raw_json)
+    } else if exists(parsed.log) {
+        .message = string!(parsed.log)
+    } else {
+        .message = encode_json(parsed)
+    }
+}
+'''
+
+[transforms.parse_coraza]
+type = "remap"
+inputs = ["kafka_coraza"]
+source = '''
+parsed, err = parse_json(.message)
+if err == null {
+    if exists(parsed.message) {
+        .message = string!(parsed.message)
+    } else if exists(parsed.raw_json) {
+        .message = string!(parsed.raw_json)
+    } else {
+        .message = encode_json(parsed)
+    }
+}
+'''
+
+[transforms.parse_apache]
+type = "remap"
+inputs = ["kafka_apache"]
+source = '''
+parsed, err = parse_json(.message)
+if err == null {
+    if exists(parsed.message) {
+        .message = string!(parsed.message)
+    } else if exists(parsed.raw_json) {
+        .message = string!(parsed.raw_json)
+    } else {
+        .message = encode_json(parsed)
+    }
+}
+'''
+
+# ==========================================
+# 3. SALIDAS
+# ==========================================
+
+# Almacén analítico: el registro de decisiones de CrowdSec.
+[sinks.kafka_crowdsec]
+type = "kafka"
+inputs = ["parse_crowdsec"]
+bootstrap_servers = "${KAFKA_BROKER}:${KAFKA_PORT}"
+topic = "crowdsec-alerts-logs"
+encoding.codec = "json"
+healthcheck.enabled = true
+
+# Ficheros que CrowdSec adquiere. Un fichero por servicio, para que el
+# tipo declarado en acquis.d/ sea inequívoco.
+[sinks.out_haproxy]
+type = "file"
+inputs = ["parse_haproxy"]
+path = "/var/log/crowdsec-pipeline/haproxy.log"
+
+[sinks.out_haproxy.encoding]
+codec = "text"
+
+[sinks.out_suricata]
+type = "file"
+inputs = ["parse_suricata"]
+path = "/var/log/crowdsec-pipeline/suricata.log"
+
+[sinks.out_suricata.encoding]
+codec = "text"
+
+[sinks.out_coraza]
+type = "file"
+inputs = ["parse_coraza"]
+path = "/var/log/crowdsec-pipeline/coraza.log"
+
+[sinks.out_coraza.encoding]
+codec = "text"
+
+[sinks.out_apache]
+type = "file"
+inputs = ["parse_apache"]
+path = "/var/log/crowdsec-pipeline/apache.log"
+
+[sinks.out_apache.encoding]
+codec = "text"

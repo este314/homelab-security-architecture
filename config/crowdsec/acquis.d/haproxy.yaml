@@ -1,0 +1,11 @@
+# Adquisición del tráfico del proxy inverso.
+#
+# El fichero lo escribe el agente Vector de inteligencia, que traduce
+# el topic de Kafka al formato que el parser de CrowdSec espera.
+#
+# Tipo declarado: haproxy-custom
+source: file
+filenames:
+  - /var/log/crowdsec-pipeline/haproxy.log
+labels:
+  type: haproxy-custom

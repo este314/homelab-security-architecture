@@ -1,0 +1,10 @@
+%% D4 · Flujo de datos operativos (pilar 5)
+%% Ingesta masiva en bruto -> normalizacion -> capa semantica -> consumo
+flowchart LR
+    SRC["Fuentes heterogéneas<br/>hojas de cálculo · API · instrumentación · gemelo digital"]
+    RAW[("Landing crudo<br/>1.079.869 registros JSON")]
+    NORM["Normalización<br/>49 tablas de origen<br/>dedup · prevalencia · validación"]
+    SEM[("Capa semántica<br/>47 vistas SQL")]
+    CONS["Consumo<br/>6 cuadros de mando · 62 paneles<br/>3 agentes de investigación"]
+
+    SRC --> RAW --> NORM --> SEM --> CONS

@@ -1,0 +1,167 @@
+# =====================================================================
+# Prometheus · configuración de referencia
+# ---------------------------------------------------------------------
+# Los targets se descubren por Consul: no hay IPs en la configuración.
+# Añadir un host al entorno es registrarlo en el catálogo con la
+# etiqueta correspondiente.
+#
+# Validar antes de aplicar:
+#   promtool check config /etc/prometheus/prometheus.yml
+# =====================================================================
+
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 1m
+  metric_name_validation_scheme: utf8
+  scrape_native_histograms: false
+
+runtime:
+  gogc: 75
+
+alerting:
+  alertmanagers:
+    - follow_redirects: true
+      enable_http2: true
+      scheme: http
+      timeout: 10s
+      api_version: v2
+      static_configs:
+        - targets:
+            - alertmanager:9093
+
+rule_files:
+  - /etc/prometheus/alert_rules.yml
+
+scrape_configs:
+  # ---------------------------------------------------------------
+  # Métricas de host
+  # ---------------------------------------------------------------
+  - job_name: node_exporter_via_consul
+    honor_timestamps: true
+    track_timestamps_staleness: false
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    scrape_protocols:
+      - OpenMetricsText1.0.0
+      - PrometheusText0.0.4
+    metrics_path: /metrics
+    scheme: http
+    enable_compression: true
+    relabel_configs:
+      - source_labels: [__meta_consul_service]
+        separator: ;
+        regex: node-exporter
+        replacement: $1
+        action: keep
+    consul_sd_configs:
+      - server: consul:8500
+        tag_separator: ','
+        scheme: http
+        allow_stale: true
+        refresh_interval: 30s
+        follow_redirects: true
+        enable_http2: true
+
+  # ---------------------------------------------------------------
+  # Métricas de contenedor
+  # ---------------------------------------------------------------
+  - job_name: cadvisor_via_consul
+    honor_timestamps: true
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    scrape_protocols:
+      - OpenMetricsText1.0.0
+      - PrometheusText0.0.4
+    metrics_path: /metrics
+    scheme: http
+    enable_compression: true
+    consul_sd_configs:
+      - server: consul:8500
+        tag_separator: ','
+        scheme: http
+        allow_stale: true
+        refresh_interval: 30s
+        follow_redirects: true
+        enable_http2: true
+        services:
+          - cadvisor
+
+  # ---------------------------------------------------------------
+  # CrowdSec · el LAPI expone sus propias métricas nativas
+  # ---------------------------------------------------------------
+  # cs_alerts, cs_active_decisions, cs_bucket_*,
+  # cs_node_hits_ok_total / cs_node_hits_ko_total
+  - job_name: crowdsec_via_consul
+    honor_timestamps: true
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    metrics_path: /metrics
+    scheme: http
+    relabel_configs:
+      - source_labels: [__meta_consul_service]
+        separator: ;
+        regex: crowdsec
+        replacement: $1
+        action: keep
+    consul_sd_configs:
+      - server: consul:8500
+        tag_separator: ','
+        scheme: http
+        allow_stale: true
+        refresh_interval: 30s
+        follow_redirects: true
+        enable_http2: true
+
+  # ---------------------------------------------------------------
+  # Bouncer de CrowdSec en el host perimetral
+  # ---------------------------------------------------------------
+  # Métricas del bouncer: tamaño de la blacklist, errores de pull,
+  # decisiones aplicadas.
+  - job_name: crowdsec_bouncer_via_consul
+    honor_timestamps: true
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    metrics_path: /metrics
+    scheme: http
+    relabel_configs:
+      - source_labels: [__meta_consul_service]
+        separator: ;
+        regex: crowdsec-bouncer
+        replacement: $1
+        action: keep
+    consul_sd_configs:
+      - server: consul:8500
+        tag_separator: ','
+        scheme: http
+        allow_stale: true
+        refresh_interval: 30s
+        follow_redirects: true
+        enable_http2: true
+
+  # ---------------------------------------------------------------
+  # Métricas del bus de eventos y del pipeline de ingesta
+  # ---------------------------------------------------------------
+  # cs_node_hits_ko_total es la métrica que hay que vigilar: si
+  # sube, el formato de log de origen ha cambiado y el parser ya no
+  # entiende el mensaje.
+  - job_name: pipeline_via_consul
+    honor_timestamps: true
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    metrics_path: /metrics
+    scheme: http
+    relabel_configs:
+      - source_labels: [__meta_consul_service]
+        separator: ;
+        regex: vector|pipeline
+        replacement: $1
+        action: keep
+    consul_sd_configs:
+      - server: consul:8500
+        tag_separator: ','
+        scheme: http
+        allow_stale: true
+        refresh_interval: 30s
+        follow_redirects: true
+        enable_http2: true

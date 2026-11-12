@@ -1,0 +1,51 @@
+# =====================================================================
+# CrowdSec · escenario propio · severidad del IDS
+# ---------------------------------------------------------------------
+# Traduce las alertas del IDS en decisiones de bloqueo.
+#
+# Dos clases de regla con criterios distintos:
+#
+#   · severidad 1 (critical) → trigger → ban al primer evento.
+#     Una firma de explotación es inequívoca.
+#
+#   · severidad 2 (high/medium) → leaky → ban sólo si aparecen DOS
+#     firmas DISTINTAS en 20 s. Un 404 aislado de un escáner legítimo
+#     no debe producir un ban; diez firmas distintas sí.
+#
+# La severidad 3 (nivel de transporte) no tiene regla: su volumen es
+# enorme y su valor de detección es marginal. Se filtra en el borde,
+# antes de publicar. Ver docs/adr/003-filtrado-en-el-edge.md
+# =====================================================================
+
+# ---------------------------------------------------------------
+# Severidad 1: ban inmediato
+# ---------------------------------------------------------------
+type: trigger
+name: crowdsecurity/suricata-major-severity
+description: "Detect exploit attempts via emerging threat rules"
+filter: "evt.Meta.log_type == 'suricata_alert' && evt.Parsed.proto == 'TCP' && evt.Meta.suricata_rule_severity == '1'"
+groupby: evt.Meta.source_ip
+blackhole: 1m
+reprocess: true
+labels:
+  service: suricata
+  type: exploit
+  remediation: true
+
+---
+# ---------------------------------------------------------------
+# Severidad 2: ban sólo con evidencia acumulada
+# ---------------------------------------------------------------
+type: leaky
+capacity: 2
+leakspeed: 20s
+distinct: evt.Meta.suricata_alert_signature_id
+name: crowdsecurity/suricata-high-medium-severity
+description: "Detect exploit attempts via emerging threat rules"
+filter: "evt.Meta.log_type == 'suricata_alert' && evt.Parsed.proto == 'TCP' && evt.Meta.suricata_rule_severity == '2'"
+groupby: evt.Meta.source_ip
+blackhole: 1m
+reprocess: true
+labels:
+  service: suricata
+  type: exploit

@@ -1,0 +1,52 @@
+%% D1 · Arquitectura general del homelab de seguridad
+%% Fuente editable: docs/diagramas/D1-arquitectura.mmd
+%% Exportar con:  npx -y @mermaid-js/mermaid-cli -i D1-arquitectura.mmd -o D1-arquitectura.png -b transparent -w 2400
+flowchart TB
+    subgraph NET["Internet"]
+        U["Clientes"]
+    end
+
+    subgraph PERIM["Perímetro — perimeter-01"]
+        HA["HAProxy 2.2<br/>TLS · routing · real-IP"]
+        WAF["Coraza SPOA<br/>OWASP CRS 4.30"]
+        IDS["Suricata 6.0<br/>reglas ET"]
+    end
+
+    subgraph BUS["Bus de eventos — pipeline-01"]
+        KFK[("Kafka 7.6<br/>KRaft")]
+    end
+
+    subgraph INTEL["Inteligencia — intel-01"]
+        CS["CrowdSec LAPI<br/>43 reglas"]
+        BOUC["Firewall bouncer<br/>nftables"]
+    end
+
+    subgraph DATA["Datos — store-01"]
+        CH[("ClickHouse 25.5<br/>security.*")]
+        GEO[("Diccionario GeoIP")]
+    end
+
+    subgraph OBS["Observabilidad — obs-01"]
+        PROM["Prometheus 3.13"]
+        GRAF["Grafana 13.1<br/>panel SOC"]
+    end
+
+    APP["Aplicaciones<br/>backend"]
+
+    U -->|"HTTPS"| HA
+    HA -->|"SPOE req"| WAF
+    WAF -->|"allow / deny 403"| HA
+    HA --> APP
+    HA -.->|"log"| IDS
+    IDS -.->|"eve.json"| KFK
+    HA -.->|"log"| KFK
+    WAF -.->|"audit"| KFK
+
+    KFK -->|"topic por servicio"| CS
+    CS -->|"decisión"| BOUC
+    BOUC -->|"nftables DROP"| HA
+
+    KFK -->|"consumo"| CH
+    CH --> GRAF
+    GEO --> CH
+    PROM --> GRAF

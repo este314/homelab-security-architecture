@@ -1,0 +1,42 @@
+# Secretos y credenciales
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+secrets/
+!config/**/secrets.example/
+
+# Datos locales / artefactos
+*.db
+*.sqlite
+*.sqlite3
+*.log
+data/
+tmp/
+*.csv
+*.parquet
+*.ndjson
+
+# Editores y SO
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+
+# Python / Node
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+node_modules/
+
+# Terraform / Ansible
+.terraform/
+*.tfstate
+*.tfstate.*

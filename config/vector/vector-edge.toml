@@ -1,0 +1,351 @@
+# =====================================================================
+# Vector · agente de BORDE (se ejecuta en el host perimetral)
+# ---------------------------------------------------------------------
+# Normaliza los logs del perímetro y los publica en Kafka con un
+# topic por servicio.
+#
+#   /var/log/haproxy.log        ─┐
+#   /var/log/suricata/eve.json  ─┼─► este agente ─► Kafka
+#   /var/log/coraza/audit.log   ─┘
+#
+# Validar antes de aplicar:
+#   vector validate --config /etc/vector/vector.toml
+#
+# Este fichero es una muestra anonimizada: los valores sensibles
+# vienen de variables de entorno (ver .env.example).
+# =====================================================================
+
+data_dir = "/var/lib/vector"
+
+# ==========================================
+# 1. FUENTES DE LOGS
+# ==========================================
+
+[sources.haproxy_logs]
+type = "file"
+include = ["/var/log/haproxy.log"]
+read_from = "end"
+
+[sources.suricata_logs]
+type = "file"
+include = ["/var/log/suricata/eve.json"]
+read_from = "end"
+
+[sources.coraza_logs]
+type = "file"
+include = ["/var/log/coraza/audit.log"]
+read_from = "end"
+
+# ==========================================
+# 2. TRANSFORMACIONES
+# ==========================================
+#
+# Cada fuente tiene su formato; todas se homogeneizan aquí, ANTES de
+# publicar. El agregador no necesita saber nada del formato original:
+# añadir un servicio nuevo es añadir un `remap`, no tocar el esquema.
+
+[transforms.format_haproxy]
+type = "remap"
+inputs = ["haproxy_logs"]
+source = '''
+log_message = .message
+
+# Filtro inmediato: descarta la línea si no es un log de acceso.
+# Evita que cualquier otra cosa que escriba en el fichero contamine
+# el topic.
+if !contains(string!(log_message), "client_ip=") {
+  abort
+}
+parsed = parse_json(log_message) ?? {}
+
+# Extracción segura de los campos del log-format del proxy
+client_ip_val = parsed.network.client_ip
+method_val = parsed.request.method
+uri_val = parsed.request.uri
+
+# Conversión a entero con manejo de errores
+status_val, err = to_int(parsed.response.status_code)
+if err != null {
+  status_val = 0
+}
+
+# El nivel del evento de acceso se deriva del código de respuesta.
+# OJO: para los eventos con regla (WAF/IDS) el nivel lo determina la
+# severidad de la regla, no el código HTTP. Ver format_coraza.
+level = "info"
+if status_val >= 500 {
+  level = "error"
+} else if status_val >= 400 {
+  level = "warning"
+}
+
+host_name = get_hostname!()
+current_time = format_timestamp!(now(), "%Y-%m-%d %H:%M:%S%.3f")
+
+# Se conserva el log original íntegro para auditoría forense
+raw_data = {
+  "host": host_name,
+  "service": "haproxy",
+  "level": level,
+  "message": log_message
+}
+
+. = {
+  "timestamp": current_time,
+  "host": host_name,
+  "service": "haproxy",
+  "level": level,
+  "src_ip": client_ip_val,
+  "http_method": method_val,
+  "uri": uri_val,
+  "http_status": status_val,
+  "rule_id": "",
+  "rule_msg": "",
+  "rule_severity": 0,
+  "rule_tags": [],
+  "auth_user": "",
+  "event_type": "access",
+  "message": log_message,
+  "raw_json": encode_json(raw_data)
+}
+'''
+
+[transforms.format_suricata]
+type = "remap"
+inputs = ["suricata_logs"]
+source = '''
+log_message = to_string!(.message)
+parsed = parse_json(log_message) ?? {}
+
+event_type_val = parsed.event_type
+
+# Sólo se extrae la severidad cuando el evento es una alerta real.
+# El nivel se deriva de la severidad de la REGLA, no del código HTTP:
+# una detección crítica en fase de request (donde aún no hay
+# respuesta) debe seguir siendo "critical".
+sev = 3
+rule_id = ""
+rule_msg = ""
+rule_severity = 0
+rule_tags = []
+
+if event_type_val == "alert" {
+  sev = parsed.alert.severity
+  rule_id = parsed.alert.signature_id
+  rule_msg = parsed.alert.signature
+  rule_tags = parsed.alert.metadata.tags ?? []
+}
+
+level = "info"
+if sev == 1 {
+  level = "critical"
+} else if sev == 2 {
+  level = "high"
+} else if sev == 3 {
+  level = "low"
+}
+
+src_ip_val = parsed.src_ip
+
+host_name = get_hostname!()
+current_time = format_timestamp!(now(), "%Y-%m-%d %H:%M:%S%.3f")
+
+raw_data = {
+  "host": host_name,
+  "service": "suricata",
+  "level": level,
+  "message": log_message
+}
+
+. = {
+  "timestamp": current_time,
+  "host": host_name,
+  "service": "suricata",
+  "level": level,
+  "src_ip": src_ip_val,
+  "http_method": "",
+  "uri": "",
+  "http_status": 0,
+  "rule_id": rule_id,
+  "rule_msg": rule_msg,
+  "rule_severity": sev,
+  "rule_tags": rule_tags,
+  "auth_user": "",
+  "event_type": event_type_val,
+  "message": log_message,
+  "raw_json": encode_json(raw_data)
+}
+'''
+
+[transforms.format_coraza]
+type = "remap"
+inputs = ["coraza_logs"]
+source = '''
+# Normalización del log de auditoría del WAF.
+#
+# Dos correcciones importantes frente a un parseo ingenuo:
+#
+#  1. La IP de cliente puede venir como "invalid IP" o vacía cuando la
+#     petición llega a través de un CDN. En ese caso se extrae de las
+#     cabeceras de reenvío (cf-connecting-ip, x-real-ip, x-forwarded-for).
+#
+#  2. El nivel NO se deriva del código de respuesta: en fase de petición
+#     todavía no hay respuesta, y una detección LFI de severidad
+#     "critical" se clasificaría erróneamente como "info". Se usa la
+#     severidad declarada por la regla del CRS.
+#
+#  3. La línea de auditoría del CRS se descompone en campos separados
+#     (id, mensaje, severidad, etiquetas). Guardar la línea entera
+#     produce decenas de miles de valores distintos en una columna que
+#     debería ser un identificador de regla.
+
+log_message = to_string!(.message)
+parsed = parse_json(log_message) ?? {}
+
+# Si el source ya entrega el objeto parseado, se usa tal cual
+if is_object(parsed) && !exists(parsed.transaction) && is_object(.transaction) {
+  parsed = .
+}
+
+transaction = get(parsed, ["transaction"]) ?? {}
+request_obj = get(transaction, ["request"]) ?? {}
+
+# ---- 1. IP de cliente, con fallback a las cabeceras de reenvío ----
+client_ip_val = get(transaction, ["client_ip"]) ?? ""
+
+if client_ip_val == "invalid IP" || client_ip_val == "" {
+  headers = get(request_obj, ["headers"]) ?? {}
+
+  cf_ip = get(headers, ["cf-connecting-ip", 0]) ?? null
+  x_real_ip = get(headers, ["x-real-ip", 0]) ?? null
+  x_forwarded_for = get(headers, ["x-forwarded-for", 0]) ?? null
+
+  if !is_null(cf_ip) && cf_ip != "" {
+    client_ip_val = cf_ip
+  } else if !is_null(x_real_ip) && x_real_ip != "" {
+    client_ip_val = x_real_ip
+  } else if !is_null(x_forwarded_for) && x_forwarded_for != "" {
+    client_ip_val = x_forwarded_for
+  }
+}
+
+method_val = get(request_obj, ["method"]) ?? ""
+uri_val = get(request_obj, ["uri"]) ?? ""
+
+# ---- 2. Severidad y campos de la regla ----
+messages = get(parsed, ["messages"]) ?? []
+rule_id = ""
+rule_msg = ""
+rule_severity = 0
+rule_tags = []
+
+if is_array(messages) && length!(messages) > 0 {
+  first = messages[0]
+  rule_msg = get(first, ["error_message"]) ?? get(first, ["message"]) ?? ""
+  rule_id = get(first, ["ruleId"]) ?? get(first, ["details", "id"]) ?? ""
+  rule_tags = get(first, ["details", "tags"]) ?? []
+  severity_raw = get(first, ["details", "severity"]) ?? 0
+  sev, err_sev = to_int(severity_raw)
+  if err_sev == null {
+    rule_severity = abs(sev)
+  }
+}
+
+# El nivel sale de la severidad de la regla, no del código HTTP.
+level = "info"
+if rule_severity == 0 {
+  level = "info"
+} else if rule_severity >= 3 {
+  level = "critical"
+} else if rule_severity == 2 {
+  level = "high"
+} else if rule_severity == 1 {
+  level = "medium"
+}
+
+host_name = get_hostname!()
+current_time = format_timestamp!(now(), "%Y-%m-%d %H:%M:%S%.3f")
+
+raw_data = {
+  "host": host_name,
+  "service": "coraza",
+  "level": level,
+  "message": log_message
+}
+
+. = {
+  "timestamp": current_time,
+  "host": host_name,
+  "service": "coraza",
+  "level": level,
+  "src_ip": client_ip_val,
+  "http_method": method_val,
+  "uri": uri_val,
+  "http_status": 0,
+  "rule_id": rule_id,
+  "rule_msg": rule_msg,
+  "rule_severity": rule_severity,
+  "rule_tags": rule_tags,
+  "auth_user": "",
+  "event_type": "waf_rule",
+  "message": log_message,
+  "raw_json": encode_json(raw_data)
+}
+'''
+
+# ==========================================
+# 3. FILTROS
+# ==========================================
+#
+# El ruido se descarta AQUÍ, en el origen, no en el destino.
+#
+# El 79,5 % del histórico de 90 días eran tres reglas de estado de
+# stream TCP del IDS (invalid ack / out of window). Describen el
+# transporte, no la intención de un atacante.
+#
+# Contexto: https://github.com/este314/homelab-security-architecture
+#            docs/adr/003-filtrado-en-el-edge.md
+
+[transforms.filter_traffic]
+type = "filter"
+inputs = ["format_haproxy"]
+condition = '''
+.service == "haproxy"
+'''
+
+# Sólo las alertas del IDS con severidad relevante llegan al histórico.
+# El nivel de transporte (severidad 3) se conserva en el topic de Kafka,
+# que es donde se consulta para diagnóstico fino.
+[transforms.filter_suricata]
+type = "filter"
+inputs = ["format_suricata"]
+condition = '''
+.service == "suricata" && .event_type == "alert" && .rule_severity <= 2
+'''
+
+[transforms.filter_waf]
+type = "filter"
+inputs = ["format_coraza"]
+condition = '''
+.service == "coraza"
+'''
+
+# ==========================================
+# 4. SALIDA A KAFKA (topics dinámicos)
+# ==========================================
+#
+# Un topic por servicio. Los consumidores se suscriben por patrón
+# (`^security-logs-.*`), de modo que añadir un servicio no obliga a
+# tocar la configuración de los consumidores.
+
+[sinks.send_to_kafka]
+type = "kafka"
+inputs = ["filter_traffic", "filter_suricata", "filter_waf"]
+bootstrap_servers = "${KAFKA_BROKER}:${KAFKA_PORT}"
+topic = "security-logs-{{ service }}"
+encoding.codec = "json"
+
+[sinks.send_to_kafka.librdkafka_options]
+"session.timeout.ms" = "60000"
+"max.poll.interval.ms" = "300000"
+"heartbeat.interval.ms" = "5000"

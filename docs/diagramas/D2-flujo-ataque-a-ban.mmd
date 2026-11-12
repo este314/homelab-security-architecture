@@ -1,0 +1,14 @@
+%% D2 · Flujo completo de un ataque hasta la IP bloqueada
+%% Muestra la latencia real del proceso: del evento a la IP en la blacklist.
+flowchart LR
+    A["Petición<br/>sospechosa"] --> B["HAProxy"]
+    B --> C["Coraza SPOE<br/>¿regla CRS?"]
+    C -->|"deny"| D["403 al cliente<br/>no llega al backend"]
+    C -->|"allow"| E["Suricata<br/>¿alerta ET?"]
+    E -->|"severity 1"| F["Vector → Kafka"]
+    E -->|"sin alerta"| G["Backend"]
+    F --> H["CrowdSec<br/>bucket + regla"]
+    H -->|"decisión: ban"| I["Bouncer<br/>set nftables"]
+    I --> J["DROP en el perímetro"]
+    H -->|"registro"| K["ClickHouse"]
+    K --> L["Panel SOC"]

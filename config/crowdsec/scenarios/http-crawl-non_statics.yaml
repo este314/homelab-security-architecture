@@ -1,0 +1,30 @@
+# =====================================================================
+# CrowdSec · escenario propio · rastreo agresivo
+# ---------------------------------------------------------------------
+# Detecta el rastreo masivo de recursos no estáticos desde una misma
+# IP.
+#
+# El groupby es ip + fqdn a propósito: el mismo cliente puede
+# rastrear varios sitios distintos sin que los contadores se sumen
+# entre sí. Sin esa distinción, un crawler legítimo que recorre
+# varios dominios acabaría baneado.
+#
+# Capacidad 40 con leakspeed 0,5 s: se necesita una ráfaga real de
+# peticiones, no un navegar humano.
+# =====================================================================
+
+type: leaky
+name: crowdsecurity/http-crawl-non_statics
+description: "Detect aggressive crawl from single ip"
+filter: "evt.Meta.log_type in ['http_access-log', 'http_error-log'] && evt.Parsed.static_ressource == 'false' && evt.Parsed.verb in ['GET', 'HEAD']"
+distinct: "evt.Parsed.file_name"
+leakspeed: 0.5s
+capacity: 40
+# El límite de la caché de eventos mantiene la memoria acotada
+cache_size: 5
+groupby: "evt.Meta.source_ip + '/' + evt.Parsed.target_fqdn"
+blackhole: 1m
+labels:
+  service: http
+  type: crawl
+  remediation: true

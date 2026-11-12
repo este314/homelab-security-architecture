@@ -1,0 +1,70 @@
+# Configuración de gitleaks para un repositorio de documentación.
+#
+# Además de las reglas por defecto (que buscan API keys, contraseñas,
+# tokens y material criptográfico por patrón y entropía), se añaden dos
+# reglas propias para las credenciales de infraestructura, que tienen
+# formato conocido en este entorno.
+#
+# Referencia: https://github.com/gitleaks/gitleaks
+
+[extend]
+useDefault = true
+
+# Credenciales de servicio con formato propio del entorno.
+# Se busca el patrón "clave: valor" en ficheros de configuración.
+[[rules]]
+  id = "infra-service-credential"
+  description = "Credencial de servicio de infraestructura"
+  regex = '''(?i)(?:api[_-]?key|password|passwd|secret|token|authorization)\s*[:=]\s*["']?([A-Za-z0-9_\-]{20,})["']?'''
+  path = '''(?i)(config/|\.env|\.toml|\.ya?ml|\.conf|\.cfg)'''
+  keywords = [
+    "api_key",
+    "apikey",
+    "password",
+    "passwd",
+    "secret",
+    "token",
+    "authorization",
+  ]
+
+# Credenciales incrustadas en una URL.
+[[rules]]
+  id = "url-embedded-credential"
+  description = "Credencial embebida en una URL"
+  regex = '''[a-zA-Z][a-zA-Z0-9+.-]*://[^\s/:@]+:([^\s/@]+)@[^\s/]+'''
+  keywords = ["://"]
+
+# Valores de ejemplo y marcadores de posición.
+[[allowlists]]
+  description = "Marcadores de posición y ejemplos"
+  stopwords = [
+    "CHANGE_ME",
+    "example.com",
+    "EXAMPLE_",
+  ]
+  regexes = [
+    '''CHANGE_ME.*''',
+    '''\$\{[A-Z_]+\}''',
+    '''<NUEVO>''',
+    '''<NUEVA>''',
+    '''token_viejo''',
+    '''token_nuevo''',
+    '''example\.com''',
+    '''EXAMPLE_''',
+    '''xxxxx''',
+  ]
+
+# La documentación contiene ejemplos deliberados de cabeceras y
+# marcadores que el detector no debe marcar.
+[[allowlists]]
+  description = "Ejemplos en documentación"
+  paths = [
+    '''^docs/''',
+    '''^README\.md$''',
+    '''^CONTRIBUTING\.md$''',
+    '''^SECURITY\.md$''',
+    '''^\.gitleaks\.toml$''',
+  ]
+  regexes = [
+    '''Bearer [A-Za-z0-9_\-\.=]+''',
+  ]

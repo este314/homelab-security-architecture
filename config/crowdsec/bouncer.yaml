@@ -1,0 +1,78 @@
+# =====================================================================
+# CrowdSec · bouncer de firewall
+# ---------------------------------------------------------------------
+# Se instala en el HOST PERIMETRAL: es el único sitio donde una IP
+# bloqueada deja de consumir recursos del backend.
+#
+# El bouncer es STATELESS: todo el estado está en el LAPI. Se puede
+# borrar y reconstruir en menos de un minuto.
+#
+# La credencial se genera con:
+#   cscli bouncers add firewall-bouncer-edge
+#
+# y se inyecta desde el entorno. Nunca en el fichero.
+# =====================================================================
+
+mode: nftables
+update_frequency: 10s
+
+log_mode: file
+log_dir: /var/log/
+log_level: info
+log_compression: true
+log_max_size: 100
+log_max_backups: 3
+log_max_age: 30
+
+api_url: ${CROWDSEC_LAPI_URL}
+api_key: ${CROWDSEC_BOUNCER_API_KEY}
+
+insecure_skip_verify: false
+disable_ipv6: false
+
+# DROP y no REJECT: un REJECT confirma al atacante que su IP está
+# bloqueada y le permite enumerar el rango bloqueado.
+deny_action: DROP
+deny_log: false
+
+supported_decisions_types:
+  - ban
+
+blacklists_ipv4: crowdsec-blacklists
+blacklists_ipv6: crowdsec6-blacklists
+ipset_type: nethash
+
+iptables_add_rule_comments: true
+
+# ---------------------------------------------------------------
+# nftables
+# ---------------------------------------------------------------
+# Se usa un SET y no una regla por IP: un set escala a miles de
+# entradas con una sola regla de coincidencia.
+nftables:
+  ipv4:
+    enabled: true
+    set-only: false
+    table: crowdsec
+    chain: crowdsec-chain
+    priority: -10
+  ipv6:
+    enabled: true
+    set-only: false
+    table: crowdsec6
+    chain: crowdsec6-chain
+    priority: -10
+
+nftables_hooks:
+  - input
+  - forward
+
+# ---------------------------------------------------------------
+# Modo iptables (alternativa para hosts que no usan nftables)
+# ---------------------------------------------------------------
+# Descomentar si el host no tiene nftables disponible:
+#
+# iptables_chains:
+#   - INPUT
+#   - FORWARD
+#   # - DOCKER-USER

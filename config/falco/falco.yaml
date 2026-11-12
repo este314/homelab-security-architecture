@@ -1,0 +1,87 @@
+# =====================================================================
+# Falco · configuración propuesta (runtime eBPF)
+# ---------------------------------------------------------------------
+# PROPUESTA. No desplegada todavía.
+#
+# Falco observes las llamadas al sistema mediante eBPF y emite un
+# evento cuando el comportamiento se desvía de lo esperado: apertura
+# de shell interactiva, escritura en ficheros críticos, ejecución de
+# binarios no permitidos.
+#
+# El diseño reutiliza el bus de eventos existente: falcosidekick
+# publica en el topic `security-logs-falco` y el agregador de Vector
+# lo escribe en security.falco_events, igual que el tráfico del
+# perímetro. Un solo camino de ingesta.
+#
+# Referencia: docs/adr/007-runtime-ebpf.md
+# =====================================================================
+
+# ---------------------------------------------------------------
+# Motor
+# ---------------------------------------------------------------
+# `modern_ebpf` usa el driver eBPF en espacio de usuario y no
+# requiere recompilar el kernel ni cargar un módulo.
+# ---------------------------------------------------------------
+engine:
+  kind: modern_ebpf
+  kmod:
+    buf_size_preset: 4
+
+# ---------------------------------------------------------------
+# Reglas
+# ---------------------------------------------------------------
+# El catálogo por defecto cubre: ejecución de shell, escritura en
+# ficheros sensibles, uso de gestores de paquetes, creación de
+# usuarios, montajes de filesystem,Core dumps, etc.
+#
+# PROPUESTA de despliegue: empezar con el catálogo por defecto SIN
+# reglas propias, medir el volumen durante un ciclo completo y
+# aplicar el mismo criterio de filtrado que en el pipeline de
+# seguridad (docs/adr/003-filtrado-en-el-edge.md).
+rules_files:
+  - /etc/falco/falco_rules.yaml
+  - /etc/falco/rules.d/*.yaml
+
+# Reglas propias del entorno: pendientes de redactar a partir de lo
+# que se observe en los primeros días de operación.
+
+# ---------------------------------------------------------------
+# Salida
+# ---------------------------------------------------------------
+# Un único receptor: falcosidekick, que enruta al bus de eventos.
+# Añadir destinos futuros (webhook, cola de mensajes) se hace en
+# falcosidekick, sin tocar Falco.
+json_output: true
+json_include_output_property: true
+json_include_tags_property: true
+log_stderr: true
+log_syslog: false
+
+# ---------------------------------------------------------------
+# Runtime
+# ---------------------------------------------------------------
+# Los contenedores que se quiere vigilar se declaran aquí. Falco
+# necesita ver los eventos de kernel del espacio de nombres del
+# contenedor.
+container_engines:
+  - docker
+  - containerd
+  - cri
+
+docker_host: unix:///var/run/docker.sock
+containerd_host: unix:///run/containerd/containerd.sock
+
+# ---------------------------------------------------------------
+# Rendimiento
+# ---------------------------------------------------------------
+# En un host con mucho procesos, un conjunto de reglas amplio tiene
+# coste. El buffer se ajusta al volumen observado.
+buffer_size: 4m
+
+# ---------------------------------------------------------------
+# Coste de referencia
+# ---------------------------------------------------------------
+# El runtime añade un sobrecosto medido en el host. Es el precio de
+# cerrar la capa de "dentro de la máquina" (que el perímetro no
+# puede ver) y de poder correlacionar un evento de runtime con la
+# petición HTTP que lo originó.

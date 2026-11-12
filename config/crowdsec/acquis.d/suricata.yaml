@@ -1,0 +1,11 @@
+# Adquisición de las alertas del IDS.
+#
+# El parser suricata-evelogs extrae la firma, la severidad, el
+# protocolo y el puerto de destino del evento JSON.
+#
+# Tipo declarado: suricata-evelogs
+source: file
+filenames:
+  - /var/log/crowdsec-pipeline/suricata.log
+labels:
+  type: suricata-evelogs

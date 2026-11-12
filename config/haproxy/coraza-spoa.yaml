@@ -1,0 +1,52 @@
+# =====================================================================
+# Coraza · configuración del WAF (motor SPOE de HAProxy)
+# ---------------------------------------------------------------------
+# Muestra anonimizada. El secreto de excepción es una VARIABLE DE
+# ENTORNO: nunca en claro en el fichero.
+#
+# Este motor se registra en HAProxy con:
+#   filter spoe engine coraza config /etc/haproxy/coraza.cfg
+#
+# Ver la documentación del motor: https://github.com/corazawaf/coraza-spoa
+# =====================================================================
+
+# ---------------------------------------------------------------
+# 1. Motor
+# ---------------------------------------------------------------
+coraza:
+  directives: /etc/coraza-spoa/coraza.conf
+  spoe:
+    # Group y message que HAProxy debe usar para invocar al motor.
+    # Coinciden con los del `http-request send-spoe-group` del proxy.
+    group: coraza
+    msg: coraza-req
+    # El motor responde con la variable `coraza.action`
+    var: coraza.action
+    # El motor recibe el contexto de la petición
+    req: yes
+
+  # El directorio de auditoría: aquí se escribe el log que consume el
+  # agente Vector del borde.
+  auditlog:
+    type: serial
+    part: file
+    dir: /var/log/coraza
+    file: audit.log
+
+# ---------------------------------------------------------------
+# 2. Secretos de excepción
+# ---------------------------------------------------------------
+# Sustituir por el valor real de tu entorno. En producción se
+# inyecta desde el gestor de secretos del sistema, no desde el
+# fichero de configuración.
+#
+#   export CORAZA_INGEST_TOKEN=$(cat /etc/coraza-spoa/token)
+#
+# ---------------------------------------------------------------
+
+# ---------------------------------------------------------------
+# 3. Reglas del WAF
+# ---------------------------------------------------------------
+# El resto de reglas viven en /etc/coraza-spoa/coraza.conf (OWASP CRS
+# + excepciones). Se incluye un extracto representativo en
+# ../coraza/coraza.conf

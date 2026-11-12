@@ -1,0 +1,8 @@
+# Adquisición de los logs de la aplicación web.
+#
+# Tipo declarado: apache2
+source: file
+filenames:
+  - /var/log/crowdsec-pipeline/apache.log
+labels:
+  type: apache2

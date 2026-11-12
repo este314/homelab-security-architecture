@@ -1,0 +1,31 @@
+# =====================================================================
+# CrowdSec · escenario propio · sondeo web
+# ---------------------------------------------------------------------
+# Detecta el sondeo de rutas: peticiones con 404/403/400 sobre
+# recursos no estáticos.
+#
+# Es la regla que produce más decisiones del entorno: sondee rutas
+# inexistentes es el comportamiento por defecto de un escáner.
+#
+# Capacidad 10 con leakspeed 10 s y `distinct` por ruta: diez rutas
+# DISTINTAS con error en 10 s. Diez peticiones a la misma ruta
+# inexistente (un enlace roto en un bucle) no cuentan igual.
+#
+# `reprocess: true` permite reprocesar eventos que llegaron
+# antes de que la regla estuviera desplegada.
+# =====================================================================
+
+type: leaky
+name: crowdsecurity/http-probing
+description: "Detect site scanning/probing from a single ip"
+filter: "evt.Meta.service == 'http' && evt.Meta.http_status in ['404', '403', '400'] && evt.Parsed.static_ressource == 'false'"
+groupby: "evt.Meta.source_ip + '/' + evt.Parsed.target_fqdn"
+distinct: evt.Parsed.http_path
+capacity: 10
+reprocess: true
+leakspeed: "10s"
+blackhole: 5m
+labels:
+  service: http
+  type: scan
+  remediation: true

@@ -1,0 +1,186 @@
+# =====================================================================
+# CI · verificación de la anonimización y de la documentación
+# ---------------------------------------------------------------------
+# Este repositorio publica configuraciones de un entorno real. El CI
+# no se limita a compilar: verifica que lo que se publica está
+# realmente anonimizado.
+# =====================================================================
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # =================================================================
+  # 1. Barrido de secretos y de PII
+  # =================================================================
+  secrets:
+    name: Secretos y PII
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Instalar gitleaks
+        run: |
+          GITLEAKS_VERSION=8.30.1
+          curl -sSfL -o gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          tar -xzf gitleaks.tar.gz gitleaks
+          sudo mv gitleaks /usr/local/bin/
+          gitleaks version
+
+      - name: Detectar secretos
+        run: |
+          gitleaks detect \
+            --source . \
+            --redact \
+            --verbose \
+            --exit-code 1 \
+            --config .gitleaks.toml
+
+      - name: Denylist de PII e identificadores de infraestructura
+        run: |
+          # Lista propia: identificadores de la operación real que no
+          # son secretos (y por tanto que gitleaks no detecta) pero que
+          # tampoco deben publicarse.
+          #
+          # Los patrones viven en config/anonymization-denylist.txt, que
+          # queda excluido del propio barrido.
+          DENYLIST_FILE=config/anonymization-denylist.txt
+
+          # Se ignoran los comentarios y las líneas vacías, y los
+          # patrones restantes se unen en una alternancia.
+          PATTERN=$(grep -vE '^[[:space:]]*(#|$)' "$DENYLIST_FILE" | paste -sd'|' -)
+
+          MATCHES=$(grep -rInE "$PATTERN" \
+            --exclude-dir=.git \
+            --exclude="$(basename "$DENYLIST_FILE")" \
+            --exclude='*.png' --exclude='*.svg' \
+            . || true)
+
+          if [ -n "$MATCHES" ]; then
+            echo "::error::Se han encontrado identificadores de la operación real:"
+            echo "$MATCHES"
+            exit 1
+          fi
+          echo "Denylist de PII: sin coincidencias."
+
+      - name: Verificar que no hay IPs internas reales
+        run: |
+          # Sólo se permiten los rangos genéricos documentados.
+          ALLOWED='192\.168\.(10|20|30)\.|10\.0\.0\.|127\.0\.0\.1|0\.0\.0\.0|255\.255\.'
+          FOUND=$(grep -rInE '192\.168\.[0-9]+\.' --exclude-dir=.git --exclude='*.png' --exclude='*.svg' . \
+            | grep -vE "$ALLOWED" || true)
+
+          if [ -n "$FOUND" ]; then
+            echo "::error::Direcciones IP internas fuera de los rangos genéricos:"
+            echo "$FOUND"
+            exit 1
+          fi
+          echo "Rangos IP: sin coincidencias."
+
+  # =================================================================
+  # 2. Documentación
+  # =================================================================
+  docs:
+    name: Documentación
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: markdownlint
+        run: |
+          npm install --silent --no-fund --no-audit markdownlint-cli2@0.14.0
+          npx --yes markdownlint-cli2 "**/*.md" "#node_modules"
+
+      - name: Comprobar enlaces internos
+        run: |
+          python3 - <<'PY'
+          import os, re, sys
+          from urllib.parse import unquote
+
+          pattern = re.compile(r'\[[^\]]*\]\(([^)]+)\)')
+          broken = []
+
+          for root, dirs, files in os.walk('.'):
+              dirs[:] = [d for d in dirs if d not in ('.git', 'node_modules')]
+              for name in files:
+                  if not name.endswith('.md'):
+                      continue
+                  path = os.path.join(root, name)
+                  with open(path, encoding='utf-8') as fh:
+                      text = fh.read()
+                  for link in pattern.findall(text):
+                      link = link.split('#')[0].strip()
+                      if not link or link.startswith(('http://', 'https://', 'mailto:')):
+                          continue
+                      target = os.path.normpath(os.path.join(root, unquote(link)))
+                      if not os.path.exists(target):
+                          broken.append(f"{path}: {link}")
+
+          if broken:
+              print("::error::Enlaces internos rotos:")
+              for b in broken:
+                  print("  " + b)
+              sys.exit(1)
+          print("Enlaces internos: todos resueltos.")
+          PY
+
+      - name: Comprobar que las referencias del README existen
+        run: |
+          # Los ADR referenciados desde el README tienen que existir.
+          MISSING=0
+          for f in $(grep -oE '\(docs/adr/[a-z0-9-]+\.md\)' README.md | tr -d '()' | sort -u); do
+            if [ ! -f "$f" ]; then
+              echo "::error::ADR referenciado pero inexistente: $f"
+              MISSING=1
+            fi
+          done
+          [ "$MISSING" -eq 0 ] && echo "Referencias del README: correctas."
+          exit $MISSING
+
+  # =================================================================
+  # 3. Diagramas
+  # =================================================================
+  # Valida que todos los .mmd compilan y regenera los exports para
+  # detectar que están desactualizados.
+  diagrams:
+    name: Diagramas
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar mermaid-cli
+        run: npm install --silent --no-fund --no-audit @mermaid-js/mermaid-cli@11
+
+      - name: Validar y regenerar
+        run: |
+          set -e
+          mkdir -p /tmp/render
+          for src in docs/diagramas/*.mmd; do
+            base=$(basename "$src" .mmd)
+            echo "· $base"
+            npx mmdc -i "$src" -o "/tmp/render/$base.png" -b white -w 2400 -s 2
+
+            # El PNG versionado debe coincidir con el recién generado.
+            if ! cmp -s "/tmp/render/$base.png" "docs/diagramas/$base.png"; then
+              echo "::error::El export $base.png está desactualizado."
+              echo "Regenera con: npx mmdc -i docs/diagramas/$base.mmd -o docs/diagramas/$base.png -b white -w 2400 -s 2"
+              exit 1
+            fi
+          done
+          echo "Diagramas: válidos y exports al día."

@@ -1,0 +1,81 @@
+# =====================================================================
+# CrowdSec · configuración principal del LAPI
+# ---------------------------------------------------------------------
+# Muestra anonimizada.
+#
+# Este nodo es el ÚNICO cerebro de detección del entorno: no hay
+# agentes de detección por host. El estado (buckets, decisiones) vive
+# aquí; los bouncers son ejecutores sin estado.
+# =====================================================================
+
+common:
+  daemonize: true
+  log_media: file
+  log_level: info
+  log_dir: /var/log/
+  log_max_size: 20
+  compress_logs: true
+  log_max_files: 10
+  working_dir: .
+
+config_paths:
+  config_dir: /etc/crowdsec/
+  data_dir: /var/lib/crowdsec/data/
+  simulation_path: /etc/crowdsec/simulation.yaml
+  hub_dir: /var/lib/crowdsec/hub/
+  index_path: /var/lib/crowdsec/hub/.index.json
+  notification_dir: /etc/crowdsec/notifications/
+  plugin_dir: /usr/lib/crowdsec/plugins/
+
+crowdsec_service:
+  acquisition_path: /etc/crowdsec/acquis.yaml
+  acquisition_dir: /etc/crowdsec/acquis.d
+  # Las rutas de adquisición heredadas (nginx, apache, syslog) se
+  # sustituyen por las de acquis.d/, que apuntan a los ficheros que
+  # escribe el agente Vector.
+  parser_routines: 1
+
+cscli:
+  output: human
+  color: auto
+
+db_config:
+  log_level: info
+  type: sqlite
+  db_path: /var/lib/crowdsec/data/crowdsec.db
+  flush:
+    max_items: 5000
+    max_age: 7d
+
+plugin_config:
+  user: nobody
+  group: nogroup
+
+api:
+  client:
+    insecure_skip_verify: false
+    credentials_path: /etc/crowdsec/local_api_credentials.yaml
+
+  server:
+    log_level: info
+    listen_uri: 0.0.0.0:8080
+    profiles_path: /etc/crowdsec/profiles.yaml
+    console_path: /etc/crowdsec/console.yaml
+
+    online_client:
+      credentials_path: /etc/crowdsec/online_api_credentials.yaml
+
+    # IPs con acceso administrativo a la API.
+    # La lista es corta a propósito: una IP de administración es una
+    # credencial equivalente al control del LAPI.
+    trusted_ips:
+      - 127.0.0.1
+      - ::1
+
+# Métricas para Prometheus. El panel SOC las consume como
+# señal de salud de la detección (y como control de cobertura).
+prometheus:
+  enabled: true
+  level: full
+  listen_addr: 0.0.0.0
+  listen_port: 6060
