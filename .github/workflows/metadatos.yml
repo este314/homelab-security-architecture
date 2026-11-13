@@ -62,5 +62,11 @@ jobs:
             -o /tmp/topics.json -w "topics:     HTTP %{http_code}\n"
 
           echo "--- resultado ---"
-          jq -r 'if .message then "ERROR: " + .message else "descripcion: " + (.description // "(vacia)") end' /tmp/desc.json
-          jq -r 'if .message then "ERROR: " + .message else "topics: " + ((.names // []) | join(", ")) end' /tmp/topics.json
+          jq -r 'if .message then "ERROR: " + .message else "descripcion: " + (.description // "(vacia)") end' /tmp/desc.json | tee -a "$GITHUB_STEP_SUMMARY"
+          jq -r 'if .message then "ERROR: " + .message else "topics: " + ((.names // []) | join(", ")) end' /tmp/topics.json | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat /tmp/desc.json >> "$GITHUB_STEP_SUMMARY"
+          echo >> "$GITHUB_STEP_SUMMARY"
+          cat /tmp/topics.json >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
