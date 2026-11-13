@@ -287,6 +287,137 @@ revisarse. Una regla nueva con el mismo patrón de nombre no se filtraría.
 
 ---
 
+## 3.5 · Credencial filtrada en la telemetría
+
+**Síntoma.** Una credencial de un cliente (por ejemplo, la contraseña del
+usuario de escritura del almacén analítico) aparece en el campo de mensaje
+de la tabla de eventos de seguridad.
+
+**Por qué ocurre.** El log de auditoría del WAF incluye las cabeceras de la
+petición, y ese log es la fuente de la que se alimenta la telemetría. Las
+cabeceras de autenticación del cliente viajan con la petición, así que
+acaban escritas en el histórico.
+
+### Procedimiento
+
+```bash
+# 1. MEDIR la exposición
+clickhouse-client --query "
+  SELECT count(), min(timestamp), max(timestamp)
+  FROM security.security_logs
+  WHERE message LIKE '%clickhouse-key%'"
+
+# 2. PARAR la fuga en origen: el WAF no debe registrar cabeceras.
+#    (parte 'B' = cabeceras de la peticion)
+#    SecAuditLogParts ACDEFGHZ
+sudo sed -i 's/^SecAuditLogParts ABCDEFGHZ$/SecAuditLogParts ACDEFGHZ/' \
+  /etc/coraza-spoa/coraza.conf
+sudo systemctl restart coraza-spoa
+
+# 3. ROTAR el log de auditoria en disco (guarda la credencial)
+sudo truncate -s 0 /var/log/coraza/audit.log
+sudo shred -u /var/log/coraza/audit.log.pre_purga_*
+
+# 4. PURGAR el historico
+clickhouse-client --query "
+  ALTER TABLE security.security_logs
+  DELETE WHERE message LIKE '%clickhouse-key%'"
+# La mutacion es asincrona: comprobar con
+clickhouse-client --query "
+  SELECT is_done FROM system.mutations
+  WHERE database='security' AND NOT is_done"
+clickhouse-client --query "OPTIMIZE TABLE security.security_logs FINAL"
+
+# 5. ROTAR la credencial expuesta en el almacen
+#    Ojo: revisar TODOS los consumidores antes (ver la nota).
+```
+
+### ⚠️ Antes de rotar: inventario de consumidores
+
+Rotar la contraseña del usuario `default` **rompe a todos los que la usan**.
+Hacer el inventario primero:
+
+```sql
+-- quien se conecta, con que usuario y desde donde
+SELECT initial_address, initial_user, count() AS consultas,
+       max(event_time) AS ultima
+FROM system.query_log
+WHERE event_time > now() - INTERVAL 7 DAY AND type = 'QueryFinish'
+GROUP BY initial_address, initial_user
+ORDER BY consultas DESC;
+```
+
+En el despliegue de referencia los consumidores son cuatro: el cliente de
+ingesta externa, el cargador interno de datos, y los dos paneles de
+observabilidad. **Los paneles se authentican contra el almacén por ruta
+interna**, así que no pasan por el perímetro: cambiar la contraseña no
+obliga a tocar el perímetro, pero sí a actualizar los datasources.
+
+### Cierre del endpoint público
+
+Un filtro de patrones SQL **no es control de acceso**: la misma consulta
+redactada de otra forma pasa. Para que el endpoint público del almacén
+analítico deje de ser un acceso con privilegios, la condición debe ser
+"trae el token de excepción" y no "no parece una inyección".
+
+En el proxy, con el token en un fichero aparte:
+
+```text
+# /etc/haproxy/ingest_token.map  (permisos 600)
+<TOKEN>  OK
+```
+
+```haproxy
+acl is_analytics hdr(host) -i analytics.example.com
+acl ingest_token_ok req.hdr(X-Ingest-Token),map_str(/etc/haproxy/ingest_token.map) -m str OK
+http-request deny deny_status 403 if is_analytics !ingest_token_ok
+```
+
+**Orden importante:** activar esta regla solo cuando **todos** los
+clientes externos envíen el token. Si hay más de un cliente, activar antes
+rompe la ingesta que aún funciona.
+
+Verificación (con un proxy de pruebas, sin tocar producción):
+
+```bash
+# sin token     -> 403
+# token correcto-> 200
+# token falso   -> 403
+# otro host     -> 200
+```
+
+---
+
+## 3.6 · Cliente externo de ingesta: properties del proyecto
+
+El cliente de ingesta se comunica con el almacén analítico a través del
+perímetro, y su token de excepción vive en las **properties del proyecto**,
+no en el código.
+
+En el editor de Apps Script: **Project Settings → Script Properties**.
+
+| Property | Obligatoria | Qué es |
+|---|:--:|---|
+| `INGEST_TOKEN` | ✅ | Token de excepción del WAF. Sin ella el WAF responde `403` a todo |
+| `CH_USER` | | Usuario del almacén. Por defecto `default` |
+| `CH_PASSWORD` | | Contraseña del usuario. Vacía si se usa la del property |
+
+### Errores que se confunden
+
+| Síntoma | Causa real |
+|---|---|
+| `403` en todos los envíos | Falta `INGEST_TOKEN`, o su valor no coincide con el del motor |
+| `403` intermitente | La regla de excepción aplica solo a **algunas** fases: un `CREATE TABLE` o un `ALTER TABLE` con nombre de tabla puede disparar reglas que el token no retira |
+| El token no llega aunque el código lo tiene | **Dos definiciones de la misma función en el proyecto.** En JavaScript gana la última. Buscar duplicados antes de nada |
+| `401` desde el almacén | La property `CH_PASSWORD` no está puesta o no coincide |
+
+**Comprobación rápida del lado del cliente:** registrar en el log del
+script el valor de la property (no el secreto) y abortar antes de enviar
+nada si falta la configuración. Un `403` sin explicación cuesta mucho más
+de diagnosticar que un mensaje explícito.
+
+---
+
 ## 4. Recuperación
 
 ### 4.1 El bouncer ha perdido el estado

@@ -192,6 +192,32 @@ cumplimiento, planificación de capacidad, decisiones de operación.
 - El agente autónomo **no escribe**: propone. La ejecución la decide una
   persona.
 
+### T8 · Credenciales del cliente en la telemetría de seguridad
+
+**Técnica.** El log de auditoría del WAF registra las cabeceras de la
+petición, que incluyen las de autenticación del cliente. Ese log alimenta
+la tabla de eventos de seguridad, de modo que la credencial queda escrita
+en el propio histórico de auditoría.
+
+**Impacto.** Una credencial con permisos amplios queda legible desde un
+lugar que se supone de solo lectura, y desde ahí se salta al resto.
+
+**Mitigaciones.**
+
+- El WAF **no registra las cabeceras** de la petición (ADR-008). Si no se
+  escribe, no hay que purgarlo después.
+- La credencial del cliente de ingesta es de **escritura acotada** sobre las
+  tablas destino, no la del usuario administrador.
+- El endpoint público del almacén exige el **token de excepción**: un filtro
+  de patrones SQL no es control de acceso, porque la misma consulta
+  redactada de otra forma pasa.
+- La retención acotada (3 meses) limita la ventana de exposición de lo que
+  ya esté escrito.
+
+**Riesgo residual.** El cuerpo de la petición sí se registra, y contiene
+datos de negocio. Es una decisión consciente: es lo que da valor forense al
+histórico, y el acceso a él está controlado por usuario.
+
 ---
 
 ## 5. Matriz de riesgo
@@ -205,6 +231,7 @@ cumplimiento, planificación de capacidad, decisiones de operación.
 | T5 | Exfiltración por el canal de logs | Baja | Medio | 🟡 | Ingesta sin lectura + TTL de 3 meses |
 | T6 | Agotamiento del pipeline | **Alta** | Medio | 🟠 | Filtrado en origen + retención por topic + TTL |
 | T7 | Manipulación de la telemetría | Media | Medio | 🟡 | Reglas de calidad + prevalencia sin promediar + agentes sin escritura |
+| T8 | Credenciales del cliente en la telemetría | **Alta** | Alto | 🔴 | WAF sin cabeceras (ADR-008) + credencial acotada + endpoint con token |
 
 🔴 Alto · 🟠 Medio · 🟡 Bajo
 
@@ -221,3 +248,4 @@ cumplimiento, planificación de capacidad, decisiones de operación.
 | 5 | Alertas sobre `cs_node_hits_ko_total` (cambio de formato de log) | Media |
 | 6 | Reglas de calidad del dato como código versionado, con tests | Baja |
 | 7 | Copia de seguridad verificada del almacén analítico | Media |
+| 8 | Cliente de ingesta con usuario de escritura acotada, no el administrador | Alta |

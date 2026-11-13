@@ -435,6 +435,7 @@ Cada decisión con alternativas descartadas y su coste:
 | [005](docs/adr/005-bouncer-en-perimetro.md) | Bouncer en el perímetro y estado centralizado | Ban aplicado en el punto de entrada |
 | [006](docs/adr/006-clickhouse-ttl.md) | ClickHouse con TTL y diccionario GeoIP | Histórico acotado sin particionado manual |
 | [007](docs/adr/007-runtime-ebpf.md) | Runtime con eBPF sobre el mismo bus de eventos | Un solo camino de ingesta |
+| [008](docs/adr/008-no-auditar-cabeceras.md) | El WAF no registra cabeceras de petición | Que una credencial no llegue a existir donde se lee |
 
 ---
 
