@@ -52,32 +52,36 @@ jobs:
             --exit-code 1 \
             --config .gitleaks.toml
 
-      - name: Denylist de PII e identificadores de infraestructura
+      - name: Dominios fuera de la lista permitida
         run: |
-          # Lista propia: identificadores de la operación real que no
-          # son secretos (y por tanto que gitleaks no detecta) pero que
-          # tampoco deben publicarse.
+          # Allowlist en lugar de denylist.
           #
-          # Los patrones viven en config/anonymization-denylist.txt, que
-          # queda excluido del propio barrido.
-          DENYLIST_FILE=config/anonymization-denylist.txt
+          # La denylist tendría que enumerar los identificadores que
+          # hay que evitar, lo que significa publicarlos en el propio
+          # repositorio. Con una allowlist el repo declara lo único
+          # que puede aparecer: los marcadores de posición y las
+          # referencias públicas. Cualquier dominio real cae fuera,
+          # hoy y en el futuro, sin que haya que mantener una lista.
+          PERMITIDOS='(^|\.)example\.com$|^github\.com$|^raw\.githubusercontent\.com$'
 
-          # Se ignoran los comentarios y las líneas vacías, y los
-          # patrones restantes se unen en una alternancia.
-          PATTERN=$(grep -vE '^[[:space:]]*(#|$)' "$DENYLIST_FILE" | paste -sd'|' -)
+          # El grupo de subdominios admite cero repeticiones a propósito:
+          # así también se capturan los nombres de una sola etiqueta
+          # ("dominio.com"), que son los más fáciles de colar.
+          CANDIDATOS=$(grep -rhoIE '\b[a-zA-Z0-9][a-zA-Z0-9-]*(\.[a-zA-Z0-9][a-zA-Z0-9-]*)*\.(com|net|org|io|dev|app|cloud|info|biz|me|es|cat|uk|de|fr|it|nl|pt|eu|co|tv|xyz|tech|site|online|pro|mobi|name|blog|shop|bio|local|internal|test|zone|systems|solutions|live|world|space|studio|agency|media|news|email|link|click|digital)\b' \
+            --exclude-dir=.git --exclude='*.png' --exclude='*.svg' . | sort -u)
 
-          MATCHES=$(grep -rInE "$PATTERN" \
-            --exclude-dir=.git \
-            --exclude="$(basename "$DENYLIST_FILE")" \
-            --exclude='*.png' --exclude='*.svg' \
-            . || true)
+          FALLOS=""
+          for d in $CANDIDATOS; do
+            if ! echo "$d" | grep -qE "$PERMITIDOS"; then
+              FALLOS="$FALLOS $d"
+            fi
+          done
 
-          if [ -n "$MATCHES" ]; then
-            echo "::error::Se han encontrado identificadores de la operación real:"
-            echo "$MATCHES"
+          if [ -n "$FALLOS" ]; then
+            echo "::error::Dominios fuera de la lista permitida:$FALLOS"
             exit 1
           fi
-          echo "Denylist de PII: sin coincidencias."
+          echo "Dominios: todos en la lista permitida."
 
       - name: Verificar que no hay IPs internas reales
         run: |

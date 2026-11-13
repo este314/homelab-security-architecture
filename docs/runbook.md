@@ -119,7 +119,7 @@ consumidor, y verificar antes de destruir el valor antiguo.**
 
 ```sql
 -- 1. Generar y aplicar el nuevo valor en el almacén
-ALTER USER vector_ingest IDENTIFIED WITH sha256_password BY '<NUEVO>';
+ALTER USER security_ingest IDENTIFIED WITH sha256_password BY '<NUEVO>';
 
 -- 2. Actualizar las credenciales en la configuración del agregador
 #   (2 secciones: clickhouse_sink y clickhouse_crowdsec_sink)
