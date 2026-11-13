@@ -19,10 +19,10 @@ on:
     paths:
       - '.github/workflows/metadatos.yml'
 
-permissions:
-  # Necesario para poder modificar la descripcion y los topics.
-  administration: write
-  contents: read
+# Sin bloque 'permissions': el token usa los permisos por defecto del
+# repositorio. Declarar 'administration: write' aqui es invalido (esa
+# clave existe para los tokens personales, no para GITHUB_TOKEN) y
+# hacia que GitHub no cargase el fichero.
 
 jobs:
   metadatos:
@@ -62,5 +62,5 @@ jobs:
             -o /tmp/topics.json -w "topics:     HTTP %{http_code}\n"
 
           echo "--- resultado ---"
-          jq -r '"descripcion: " + (.description // "(vacia)")' /tmp/desc.json
-          jq -r '"topics: " + ((.names // []) | join(", "))' /tmp/topics.json
+          jq -r 'if .message then "ERROR: " + .message else "descripcion: " + (.description // "(vacia)") end' /tmp/desc.json
+          jq -r 'if .message then "ERROR: " + .message else "topics: " + ((.names // []) | join(", ")) end' /tmp/topics.json
