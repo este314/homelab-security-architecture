@@ -87,7 +87,7 @@ recordarlo al definir la retención y los accesos.
 
 ## Referencia
 
-- Configuración: [`config/coraza/coraza.conf`](../config/coraza/coraza.conf)
+- Configuración: [`config/coraza/coraza.conf`](../../config/coraza/coraza.conf)
 - Procedimiento de respuesta ante una credencial filtrada:
   [`docs/runbook.md`](../runbook.md#3-5-credencial-filtrada-en-la-telemetria)
 - Escenario del modelo de amenazas:
