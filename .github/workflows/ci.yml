@@ -97,6 +97,27 @@ jobs:
           fi
           echo "Rangos IP: sin coincidencias."
 
+      - name: Comprobar que los badges se renderizan
+        run: |
+          # Un badge mal formado devuelve HTTP 200 con una imagen de
+          # error dentro, asi que comprobar el codigo de respuesta no
+          # sirve: hay que mirar el contenido.
+          FALLOS=""
+          for url in $(grep -oE 'https://[^)]*badge[^)]*|https://img\.shields\.io/[^)]*' README.md); do
+            # Segun el servicio, la etiqueta va en aria-label o en title
+            ETIQUETA=$(curl -sL --max-time 20 "$url" \
+              | grep -oE '(aria-label="[^"]*"|<title>[^<]*</title>)' | head -1)
+            if echo "$ETIQUETA" | grep -qiE '404|not found|error'; then
+              FALLOS="$FALLOS\n  $url -> ${ETIQUETA:-sin aria-label}"
+            fi
+          done
+
+          if [ -n "$FALLOS" ]; then
+            echo "::error::Badges que no se renderizan:$FALLOS"
+            exit 1
+          fi
+          echo "Badges: todos se renderizan."
+
   # =================================================================
   # 2. Documentación
   # =================================================================
