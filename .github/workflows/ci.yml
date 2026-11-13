@@ -66,7 +66,7 @@ jobs:
 
           # El grupo de subdominios admite cero repeticiones a propósito:
           # así también se capturan los nombres de una sola etiqueta
-          # ("dominio.com"), que son los más fáciles de colar.
+          # (nombre de una sola etiqueta), que son los más fáciles de colar.
           CANDIDATOS=$(grep -rhoIE '\b[a-zA-Z0-9][a-zA-Z0-9-]*(\.[a-zA-Z0-9][a-zA-Z0-9-]*)*\.(com|net|org|io|dev|app|cloud|info|biz|me|es|cat|uk|de|fr|it|nl|pt|eu|co|tv|xyz|tech|site|online|pro|mobi|name|blog|shop|bio|local|internal|test|zone|systems|solutions|live|world|space|studio|agency|media|news|email|link|click|digital)\b' \
             --exclude-dir=.git --exclude='*.png' --exclude='*.svg' . | sort -u)
 
