@@ -47,6 +47,24 @@ Refs: #<issue>
 
 Tipos admitidos: `docs`, `config`, `diagrams`, `ci`, `fix`, `chore`.
 
+## Vista previa social
+
+`docs/social-preview.png` (1280×640) es la imagen que GitHub muestra al
+compartir el enlace: aparece como card en LinkedIn, X y Slack. Se sube en
+**Settings → General → Social preview → Customize**.
+
+La fuente es `docs/social-preview.py`, que escribe `docs/social-preview.svg`.
+Para regenerarla:
+
+```bash
+python3 docs/social-preview.py docs/social-preview.svg
+inkscape docs/social-preview.svg --export-type=png \
+    --export-filename=docs/social-preview.png --export-width=1280 --export-height=640
+```
+
+Si cambias las cifras del README, actualiza también las de la card: es lo
+primero que ve quien llega desde LinkedIn.
+
 ## Añadir un componente nuevo
 
 1. Diagrama actualizado (`docs/diagramas/`).

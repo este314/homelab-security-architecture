@@ -1,5 +1,10 @@
 # Homelab Security Architecture
 
+[![CI](https://github.com/este314/homelab-security-architecture/actions/workflows/ci.yml/badge.svg)](https://github.com/este314/homelab-security-architecture/actions/workflows/ci.yml)
+[![Licencia](https://img.shields.io/github/license/este314/homelab-security-architecture)](LICENSE)
+[![Último commit](https://img.shields.io/github/last-commit/este314/homelab-security-architecture)](https://github.com/este314/homelab-security-architecture/commits/main)
+[![Diagramas](https://img.shields.io/badge/diagramas-4-mermaid-ff6b8b)](docs/diagramas/)
+
 **Arquitecturas de seguridad, observabilidad y procesamiento de datos en un
 entorno de laboratorio perimetral.** Un único bus de eventos (Kafka) alimenta
 dos consumidores independientes —detección y bloqueo (CrowdSec) e histórico y
@@ -13,6 +18,8 @@ ocurre dentro.
 > is published here: the configurations are written to be *demo-native*, so any
 > value that identifies an infrastructure is replaced by an environment variable
 > or a generic placeholder.
+
+![Vista previa de la arquitectura](docs/social-preview.png)
 
 ---
 

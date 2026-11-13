@@ -62,7 +62,7 @@ jobs:
           # que puede aparecer: los marcadores de posición y las
           # referencias públicas. Cualquier dominio real cae fuera,
           # hoy y en el futuro, sin que haya que mantener una lista.
-          PERMITIDOS='(^|\.)example\.com$|^github\.com$|^raw\.githubusercontent\.com$'
+          PERMITIDOS='(^|\.)example\.com$|^github\.com$|^raw\.githubusercontent\.com$|^img\.shields\.io$|^www\.w3\.org$'
 
           # El grupo de subdominios admite cero repeticiones a propósito:
           # así también se capturan los nombres de una sola etiqueta
