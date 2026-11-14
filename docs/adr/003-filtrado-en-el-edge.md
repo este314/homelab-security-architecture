@@ -25,16 +25,55 @@ atacante. Son ruido puro: describen el transporte, no la amenaza.
 
 ## Decisión
 
-Filtrar en el **edge** (el agente Vector que ya está junto al productor), con
-dos filtros encadenados:
+Filtrar en **dos capas**, porque el ruido se paga en un sitio distinto en
+cada una.
 
-1. **Por regla.** Lista explícita de reglas de estado de stream que se
-   descartan.
-2. **Por severidad.** Al histórico sólo pasan las alertas de severidad ≥ 2.
+**Capa 1 · En el origen (Suricata).** Es la capa que de verdad importa: el
+fichero de log se escribe *antes* de que el pipeline lo lea, así que filtrar
+después no ahorra ni un byte de disco.
+
+```apache
+# /etc/suricata/threshold.config
+# Reglas del motor STREAM (gid 1, severidad 3): describen anomalias de
+# estado TCP (ack invalido, segmentacion fuera de ventana), no la
+# intencion de un atacante.
+suppress gen_id 1, sig_id 2210029   # ESTABLISHED invalid ack
+suppress gen_id 1, sig_id 2210045   # Packet with invalid ack
+suppress gen_id 1, sig_id 2210020   # ESTABLISHED packet out of window
+```
+
+**Capa 2 · En el edge (Vector).** Segunda red, por si el conjunto de reglas
+del IDS cambia y aparece una regla ruidosa nueva:
+
+```toml
+[transforms.filter_suricata]
+type = "filter"
+inputs = ["format_suricata"]
+condition = '''
+.service == "suricata" && .event_type == "alert" && (.rule_severity <= 2) ?? true
+'''
+```
+
+El `?? true` es importante: si el campo de severidad no está, el evento **se
+conserva** en lugar de abortarse. En VRL, comparar un valor nulo es un error
+en tiempo de ejecución, y un filtro que aborta descarta eventos que no sabe
+clasificar. Mejor pasarlos.
 
 El nivel de transporte (severidad 3) **se conserva en el topic de Kafka**, que
 es donde se consulta para diagnóstico fino. Se pierde en el histórico
 analítico, que es donde no aporta.
+
+### Por qué el filtro tiene que ir en el origen
+
+El histórico de telemetría del almacén no era el único problema: **el disco
+del host perimetral se llenaba**. Con el ruido sin filtrar, el fichero de
+eventos del IDS llegaba a **3,7 GB en un día** sobre un disco de 11 GB, con
+14 rotaciones retenidas: el perímetro se quedó **al 100 %** y el agente de
+registro dejó poder escribir sus *checkpoints*, con lo que la ingesta entera
+se detuvo sin que nada fallara de forma visible.
+
+Filtrar en el consumidor no habría arreglado nada de eso: los gigabytes ya
+estaban escritos en el disco antes de que nadie los leyera.
 
 ## Alternativas descartadas
 
@@ -71,6 +110,12 @@ revisable**, no un comodín por severidad. Añadir una regla a la lista exige
 justificarla en el pull request. Y el topic conserva todo, así que una
 investigación puede reconstruirse desde el bus mientras la retención del
 topic lo cubra.
+
+**Efecto secundario sobre el disco.** Sin el filtro en origen, el host
+perimetral se queda sin espacio y la ingesta se detiene sin error visible.
+Es el motivo por el que el filtrado va acompañado de una política de
+rotación de logs con `maxsize`, que fuerza la rotación aunque el día no se
+haya llenado.
 
 ## Referencia
 

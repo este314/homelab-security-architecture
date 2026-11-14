@@ -418,6 +418,156 @@ de diagnosticar que un mensaje explícito.
 
 ---
 
+## 3.7 · Disco del host perimetral lleno
+
+**Síntoma.** La ingesta se detiene sin error visible. En los logs del agente
+de registro del perímetro:
+
+```text
+ERROR Failed writing checkpoints. error=No space left on device (os error 28)
+```
+
+El agente sigue vivo y el tráfico sigue fluyendo, pero no publica nada: los
+*checkpoints* son los que le indican por dónde iba leyendo, y sin poder
+escribirlos se queda atascado.
+
+### Causas y cómo distinguirlas
+
+| Causa | Señal | Solución |
+|---|---|---|
+| Ruido del IDS sin filtrar | El fichero de eventos del IDS crece por gigas | [ADR-003](adr/003-filtrado-en-el-edge.md): suprimir en origen + filtrar en el edge |
+| Política de rotación insuficiente | Muchas rotaciones retenidas | `maxsize` en la política de rotación, fewer rotaciones |
+| Otro consumidor | `du -ah /var/log` | Liberar y revisar |
+
+### Procedimiento
+
+```bash
+# 1. Diagnóstico
+df -h /
+sudo du -ah /var/log | sort -rh | head -12
+
+# 2. Liberar espacio. Las rotaciones antiguas ya están ingeridas:
+sudo find /var/log/suricata -name "eve.json.*" -type f -mtime +2 -delete
+sudo truncate -s 0 /var/log/suricata/fast.log
+
+# 3. Comprobar que el agente de registro se recupera solo
+sudo journalctl -u vector -f
+# "Resuming to watch file" = recuperado
+
+# 4. Evitar que vuelva: filtrar en origen (ADR-003) y poner `maxsize`
+#    en la politica de rotación de logs.
+```
+
+### Trampa: un reload que "falla" pero funciona
+
+Al recargar las reglas del IDS, el proceso helper de systemd puede morir por
+timeout (recargar 53.000 reglas lleva más de 90 s) y dejar el servicio como
+`failed`, **aunque la recarga ya se haya aplicado**:
+
+```text
+suricata[...]: rule reload starting
+suricata[...]: Threshold config parsed: 4 rule(s) found
+suricata[...]: 53382 rules successfully loaded, 0 rules failed
+systemd[1]: suricata.service: Reload operation timed out. Killing reload process.
+systemd[1]: suricata.service: Reload failed for Suricata IDS/IDP daemon.
+```
+
+El servicio **sigue activo** y con las reglas nuevas. Para que el helper
+tenga tiempo, añadir un *drop-in*:
+
+```ini
+# /etc/systemd/system/suricata.service.d/override.conf
+[Service]
+TimeoutStartSec=300
+TimeoutStopSec=300
+```
+
+---
+
+## 3.8 · Rotar la credencial del usuario administrador del almacén
+
+**Antes de rotar, inventariar los consumidores.** Rotar sin inventariar deja
+sin ingesta, sin paneles o sin analítica, y a veces sin que se note hasta que
+un informe sale vacío.
+
+```sql
+SELECT initial_address, initial_user, count() AS consultas,
+       max(event_time) AS ultima
+FROM system.query_log
+WHERE event_time > now() - INTERVAL 7 DAY AND type = 'QueryFinish'
+GROUP BY initial_address, initial_user
+ORDER BY consultas DESC;
+```
+
+Cada fila es un consumidor. **Cada consumidor debería tener su propio
+usuario**, con permisos acotados. Si varios comparten el mismo usuario
+administrador, la rotación les afecta a todos a la vez y no se puede hacer
+por partes.
+
+| Consumidor | Usuario | Permisos |
+|---|---|---|
+| Carga interna de datos | `etl_ingest` | `SELECT, INSERT, CREATE, ALTER` sobre las bases de destino |
+| Cliente externo de ingesta | `ingest_app` | `INSERT, CREATE, ALTER` sobre las bases de destino |
+| Paneles de observabilidad | `*_grafana_ro` | `SELECT` |
+| Ingesta de telemetría de seguridad | `security_ingest` | `INSERT` sobre las tablas de eventos |
+| Meteorología | `meteo_ingest` | `SELECT, INSERT, CREATE, ALTER` |
+
+### Regla: ninguna credencial en el código
+
+Todos los consumidores leen sus credenciales de un fichero `.env` con permisos
+600, fuera de cualquier repositorio:
+
+```bash
+# Crear el usuario
+clickhouse-client --query "
+  CREATE USER IF NOT EXISTS etl_ingest IDENTIFIED WITH sha256_password BY '<NUEVO>'
+  GRANT SELECT, INSERT, CREATE, ALTER ON analiticas.* TO etl_ingest"
+```
+
+```python
+# En el script: una unica fuente de verdad
+_ENV_PATH = '/home/scripts/edar_loader/.env'
+_env = {}
+with open(_ENV_PATH, encoding='utf-8') as _fh:
+    for _line in _fh:
+        _line = _line.strip()
+        if _line and not _line.startswith('#') and '=' in _line:
+            _k, _v = _line.split('=', 1)
+            _env[_k.strip()] = _v.strip()
+
+CH_USER = _env.get('CH_USER', 'etl_ingest')
+CH_PASSWORD = _env.get('CH_PASSWORD', '')
+```
+
+Una contraseña incrustada en el código acaba en tres sitios sin control: el
+fichero, el historial de control de versiones y la telemetría.
+
+### ⚠️ El usuario administrador puede estar en `users.xml`
+
+Si el usuario está definido en la configuración, `ALTER USER` falla con
+`ACCESS_STORAGE_READONLY`: la configuración manda sobre el almacén de
+permisos. En ese caso hay que cambiar **el fichero** y reiniciar:
+
+```bash
+# 1. Backup
+cp -a /etc/clickhouse-server/users.d/<usuario>.xml       /etc/clickhouse-server/users.d/<usuario>.xml.bak_$(date +%Y%m%d_%H%M%S)
+
+# 2. Cambiar el hash (sha256 de la nueva contraseña, en hexadecimal)
+NEW_HASH=$(printf '%s' '<NUEVA_CONTRASEÑA>' | sha256sum | cut -d' ' -f1)
+sed -i "s|<password_sha256_hex>.*</password_sha256_hex>|<password_sha256_hex>$NEW_HASH</password_sha256_hex>|" \
+  /etc/clickhouse-server/users.d/<usuario>.xml
+
+# 3. Reiniciar y verificar
+systemctl restart clickhouse-server
+clickhouse-client --password '<NUEVA_CONTRASEÑA>' --query "SELECT currentUser()"
+```
+
+El reinicio son segundos, pero **corta la escritura de todo el pipeline**
+durante ese tiempo. Kafka retiene los eventos: no se pierde nada, se
+recupera solo.
+
+---
+
 ## 4. Recuperación
 
 ### 4.1 El bouncer ha perdido el estado

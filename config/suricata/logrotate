@@ -1,0 +1,47 @@
+# =====================================================================
+# logrotate · política de los logs del IDS
+# ---------------------------------------------------------------------
+# Muestra anonimizada.
+#
+# Por que no vale la politica por defecto (daily + rotate 14):
+#
+#   · con el ruido de estado TCP sin filtrar, el fichero de eventos
+#     llegaba a 3,7 GB en UN dia, sobre un disco de 11 GB
+#   · 14 rotaciones retenidas se traducen en varios GB
+#   · con delaycompress, la rotacion .1 ocupa lo mismo que el
+#     original mientras espera a la siguiente rotacion
+#
+# Con la politica de abajo, el disco queda acotado por tamano y no por
+# tiempo, que es lo que importa: el problema era un pico en un dia, no
+# la acumulacion a lo largo de un mes.
+# =====================================================================
+
+/var/log/suricata/*.log
+/var/log/suricata/*.json {
+    daily
+
+    # maxsize fuerza la rotacion aunque el dia no se haya llenado.
+    # Un pico de trafico genera gigas en un dia, no en un mes.
+    maxsize 512M
+
+    # 7 rotaciones en vez de 14: el disco del host perimetral es
+    # pequeno y el historico de eventos ya vive en el almacen
+    # analitico.
+    rotate 7
+
+    missingok
+    notifempty
+    compress
+
+    # sin delaycompress: la .1 ocupa lo mismo que el original mientras
+    # espera a la rotacion siguiente.
+    delaycompress off
+
+    create 640 root adm
+    sharedscripts
+
+    postrotate
+        # SIGHUP para que el IDS reabra el fichero rotado.
+        [ -f /run/suricata.pid ] && /bin/kill -HUP "$(cat /run/suricata.pid)" || true
+    endscript
+}
